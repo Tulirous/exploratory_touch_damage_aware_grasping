@@ -1,0 +1,55 @@
+project:
+  name: fastwam_fragile
+  seed: 42
+
+backbone:
+  # Do not train Wan2.2-5B from scratch. Use a frozen visual/video backbone
+  # later and export per-episode visual latents into the dataset.
+  name: fastwam_wan_frozen
+  visual_latent_dim: 3072
+  freeze: true
+  use_precomputed_visual_latents: true
+
+data:
+  train_manifest: data/manifests/train.jsonl
+  val_manifest: data/manifests/val.jsonl
+  tactile_channels: 4
+  tactile_window: 64
+  action_horizon: 10
+  # GELLO guide currently records 6-D UR5 actions. Change to 7 after adding
+  # gripper_action into the LeRobot action/state stream.
+  action_dim: 6
+  num_workers: 4
+
+model:
+  hidden_dim: 512
+  use_text: true
+  text_vocab_size: 4096
+  text_max_tokens: 32
+  text_latent_dim: 256
+  tactile_latent_dim: 256
+  action_latent_dim: 256
+  fusion_layers: 4
+  fusion_heads: 8
+  dropout: 0.1
+
+outcomes:
+  binary:
+    - success
+    - slip
+    - damage
+    - force_overshoot
+    - release_ready
+    - human_unsafe
+  regression:
+    - deformation
+    - recovery_ratio
+
+training:
+  batch_size: 32
+  epochs: 50
+  lr: 0.0001
+  weight_decay: 0.01
+  precision: bf16
+  device: cuda
+  checkpoint_dir: checkpoints/fastwam_fragile

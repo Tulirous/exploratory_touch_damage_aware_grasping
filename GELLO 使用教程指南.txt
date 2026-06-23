@@ -1,0 +1,252 @@
+GELLO + UR5 + LeRobot V3.0 遥操作与数据采集全指南
+
+github：https://github.com/wuphilipp/gello_software
+http://www.rosrobot.cn/?tags=123
+
+阶段一：基础环境与依赖配置 (Conda版)
+官方推荐使用 uv，但我们可以完全使用更熟悉的 conda 来搭建隔离环境。
+1. 克隆代码库
+Bash
+git clone https://github.com/wuphilipp/gello_software.git
+cd gello_software
+git submodule init
+git submodule update
+2. 创建 Conda 虚拟环境
+（GELLO 官方要求 Python 3.11）
+Bash
+conda create -n gello_env python=3.11 -y
+conda activate gello_env
+3. 安装基础与核心依赖
+Bash
+pip install -r requirements.txt
+# 安装 gello 本身
+pip install -e .
+# 安装 Dynamixel 电机 SDK
+pip install -e third_party/DynamixelSDK/python
+4. 安装 UR5 与 LeRobot 专属依赖
+Bash
+pip install ur_rtde    # UR机械臂通信库
+pip install lerobot    # VLA数据格式与处理库
+
+阶段二：GELLO 主端与 UR5 硬件对齐校准
+你不需要管说明书里的 YAM 或 CAN 总线内容，UR5 走的是网线 TCP/IP。第一步是让系统知道你的 GELLO 控制器的“物理零位”偏差，也就是获取关节偏移量 (Offsets)
+1. 摆放姿态
+将你的 GELLO 主端和真实的 UR5 手动摆成互相匹配的基准姿态（0 -90 90 -90 -90 0度，参考官方文档配图）。
+软件上：不需要开 UR5 的控制节点。
+硬件上：打开你真实 UR5 的示教器（控制器屏幕）。
+用示教器手动把真实的 UR5 移动到这组关节角度：0, -90度, 90度, -90度, -90度, 0 （这对应弧度就是 0, -1.57, 1.57, -1.57, -1.57, 0）。
+UR5 停在这个完美标准姿态后，把它当成一个参照物（模特）。
+把你手里的 GELLO 主端，照着旁边真实的 UR5，一点点掰，掰得跟它一模一样。
+在电脑上运行校准脚本获取 Offset。
+2. 运行校准脚本获取 Offsets
+运行校准脚本：找到连接你 GELLO 的 USB 端口号（终端输入 ls /dev/serial/by-id），然后运行以下命令。请注意，UR 机械臂的初始关节角度设定为 0 -1.57 1.57 -1.57 -1.57 0，关节符号（Joint Signs）需设置为 1 1 -1 1 1 1；运行：
+Bash
+python scripts/gello_get_offset.py \
+    --start-joints 0 -1.57 1.57 -1.57 -1.57 0 \
+    --joint-signs 1 1 -1 1 1 1 \
+    --port /dev/serial/by-id/你的USB端口标识
+3. 填入配置文件
+终端会输出一组关节偏移量和夹爪最大开合数值（Joint Offsets）。获取到偏移量后，你需要让系统记录这些数据：打开代码文件 gello/agents/gello_agent.py，找到 PORT_CONFIG_MAP 字典的Left UR，将你的USB 端口号、joint_signs (1 1 -1 1 1 1) 以及刚刚生成的偏移量和夹爪最大开合填进去。
+4、启动遥操作
+在正式遥操作时，你需要开启两个独立的终端窗口，并确保两个终端都激活了之前创建的虚拟环境（source .venv/bin/activate）。
+终端 1：启动 UR5 机器人节点
+这个节点负责与真实的 UR5 机械臂建立网络通信。请将下方的 IP 地址替换为你 UR5 的实际 IP：
+Bash
+python experiments/launch_nodes.py --robot ur --robot_ip 192.168.12.4
+(注：--robot ur 指定了真实硬件，--robot_ip 用于传入你 UR5 的真实局域网 IP 地址。)
+终端 2：启动 GELLO 控制器
+当机器人节点成功启动并连接后，在第二个终端启动你的 GELLO 主端控制器：
+Bash
+python experiments/run_env.py --agent=gello
+(若有需要，你可以附加 --start-joints 参数来指定 GELLO 的启动配置，以便系统在复位时自动对齐。)
+执行完上述操作后，你就可以通过转动 GELLO 主端来实时遥操作真实的 UR5 机械臂了。如果在操作中发现某个关节的转动方向是反的，可以在配置文件或 gello_agent.py 中将对应关节的符号（Joint Sign）反转（即 1 改为 -1，或反之）即可解决。
+
+阶段三：双相机 (D435 + D415) 硬核防错绑定
+官方原始代码存在“瞎分配端口”的缺陷，每次插拔 USB 都可能导致“全局”和“腕部”画面错乱。我们需要做物理序列号硬绑定。
+1. 获取相机序列号 (Serial Number)
+分别插上 D415 和 D435，运行：
+Bash
+python gello/cameras/realsense_camera.py
+终端会打印出类似 ['812345678901', '912345678902'] 的设备号。弄清楚哪个是 D415，哪个是 D435。如果不确定，可以拔掉一个再运行一次看看剩哪个
+2. 修改 launch_camera_nodes.py 代码
+打开 experiments/launch_camera_nodes.py，将内容完全替换为以下防错代码：
+
+Python
+#我们直接去掉了原始代码里那种不可靠的“自动按顺序分配”逻辑，改成了一个硬编码的字典 CAMERA_MAP。这样无论你插入 USB 的顺序是什么，D415 的画面永远只会推送到 5000 端口，D435 的画面永远只会推送到 5001 端口。你的数据采集也就绝对不会乱了。
+from dataclasses import dataclass
+from multiprocessing import Process
+import tyro
+from gello.cameras.realsense_camera import RealSenseCamera
+from gello.zmq_core.camera_node import ZMQServerCamera
+
+@dataclass
+class Args:
+    # ⚠️ 强烈注意：原文件里写的是 128.32.175.167。
+    # 除非这是你这台电脑的真实局域网IP，否则如果你是在本机运行，一定要改成 127.0.0.1 或者 0.0.0.0！
+    hostname: str = "127.0.0.1"  # 强制绑定本地
+
+def launch_server(port: int, camera_id: str, args: Args):
+    # 这里传入具体的 Serial Number (camera_id) 让相机开启
+    camera = RealSenseCamera(device_id=camera_id)
+    server = ZMQServerCamera(camera, port=port, host=args.hostname)
+    print(f"Starting camera server on port {port} for device {camera_id}")
+    server.serve()
+
+def main(args):
+    # ==========================================
+    # 在此硬编码你的设备号，彻底杜绝端口乱序！
+    # ==========================================
+    CAMERA_MAP = {
+        "你的D415序列号": 5000,  # 强制绑定给腕部 (wrist)
+        "你的D435序列号": 5001   # 强制绑定给全局 (base)
+    }
+    
+    camera_servers = []
+    for camera_id, camera_port in CAMERA_MAP.items():
+        camera_servers.append(Process(target=launch_server, args=(camera_port, camera_id, args)))
+
+    for server in camera_servers:
+        server.start()
+    for server in camera_servers:
+        server.join()
+
+if __name__ == "__main__":
+    main(tyro.cli(Args))
+    
+阶段四：无缝接入 LeRobot V3.0 (核心代码改造)
+这是整套系统最精华的部分：抛弃极耗内存的 .pkl 裸存方案，让采集到的画面直接被 LeRobot 压缩成 MP4 视频，动作压成 Parquet。
+
+1. 修改启动入口，开启相机与替换保存类
+打开 experiments/run_env.py：
+
+开启相机节点： 在第 51 行左右，取消两行 ZMQClientCamera 的注释：
+
+Python
+camera_clients = {
+    "wrist": ZMQClientCamera(port=args.wrist_camera_port, host=args.hostname),
+    "base": ZMQClientCamera(port=args.base_camera_port, host=args.hostname),
+}
+
+替换录制逻辑： 在文件末尾的 if args.use_save_interface: 处：
+Python
+# 2. 找到文件末尾关于 use_save_interface 的部分，修改如下：
+# 原始代码是：
+# if args.use_save_interface:
+#     save_interface = SaveInterface(...)
+
+# 改为引入我们自定义的 LeRobot 接口：
+save_interface = None
+if args.use_save_interface:
+    from gello.utils.control_utils import LeRobotSaveInterface 
+    save_interface = LeRobotSaveInterface(
+        repo_id="local/ur5_lerobot_dataset", 
+        fps=30
+    )
+run_control_loop(env, agent, save_interface, use_colors=True)
+2. 编写 LeRobotSaveInterface 采集类
+打开 gello/utils/control_utils.py，在任意位置（如 SaveInterface 下方）新增此类：
+
+Python
+import torch
+import numpy as np
+from typing import Dict, Any, Optional
+
+class LeRobotSaveInterface:
+    def __init__(self, repo_id: str = "local/ur5_dataset", fps: int = 30):
+        from gello.data_utils.keyboard_interface import KBReset
+        from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+
+        self.kb_interface = KBReset()
+        self.is_recording = False
+        
+        # 严格定义 LeRobot 的特征空间
+        features = {
+            "observation.state": {"dtype": "float32", "shape": (6,)},
+            "action": {"dtype": "float32", "shape": (6,)},
+            "observation.images.base": {"dtype": "video", "shape": (3, 480, 640)},  # D435
+            "observation.images.wrist": {"dtype": "video", "shape": (3, 480, 640)}  # D415
+        }
+        
+        self.dataset = LeRobotDataset.create(repo_id=repo_id, fps=fps, features=features)
+        print(f"\n[LeRobot] 数据集已初始化！\n操作: 按[S]录制, 松开结束Episode, 按[Q]退出并整合数据")
+
+    def _process_image(self, img_array: np.ndarray) -> torch.Tensor:
+        if img_array.shape[-1] == 3:
+            img_array = np.transpose(img_array, (2, 0, 1))
+        return torch.from_numpy(img_array)
+
+    def update(self, obs: Dict[str, Any], action: np.ndarray) -> Optional[str]:
+        state = self.kb_interface.update()
+
+        if state == "start":
+            if not self.is_recording:
+                print("\n[LeRobot] 🎥 开始录制新的 Episode...")
+                self.is_recording = True
+
+        elif state == "save":
+            if self.is_recording:
+                self.dataset.add_frame({
+                    "observation.state": torch.tensor(obs["joint_positions"], dtype=torch.float32),
+                    "action": torch.tensor(action, dtype=torch.float32),
+                    "observation.images.wrist": self._process_image(obs["rgb"][0]),
+                    "observation.images.base": self._process_image(obs["rgb"][1])
+                })
+
+        elif state == "normal" and self.is_recording:
+            print("[LeRobot] ⏹️ 保存当前 Episode (编码视频中)...")
+            self.dataset.save_episode(task="UR5 Teleoperation Task")
+            self.is_recording = False
+
+        elif state == "quit":
+            if self.is_recording:
+                self.dataset.save_episode(task="UR5 Teleoperation Task")
+            print("[LeRobot] 🔄 正在整合数据集...")
+            self.dataset.consolidate()
+            print("[LeRobot] ✅ 退出程序。")
+            return "quit"
+
+        return None
+        
+阶段五：终极启动流程与操作实战
+一切配置就绪！每次你准备开始遥操作采集数据时，请打开三个不同的终端（并分别运行 conda activate gello_env）：
+
+终端 1 (启动相机节点):
+Bash
+python experiments/launch_camera_nodes.py
+
+终端 2 (连接真实 UR5 控制箱):
+Bash
+python experiments/launch_nodes.py --robot ur --robot_ip 192.168.12.4
+
+终端 3 (启动 GELLO 主端与录制程序):
+Bash
+python experiments/run_env.py --agent=gello --use-save-interface
+
+遥操作采数动作规范：
+握住 GELLO 主端，准备执行任务。
+按住键盘 S 键（此时 LeRobot 疯狂录制双相机和机械臂状态）。
+操控机械臂完成一个完整的动作（如：抓取苹果放进篮子）。
+松开 S 键（当前这一条轨迹的视频会自动被 H264 编码并保存）。
+重复 2-4 步数十次，收集足够的数据。
+全部采集完成后，按 Q 键。LeRobot 会把刚刚所有的记录合并生成一个符合 V3.0 标准、体积超小的神级数据集，直接可以丢给模型训练。
+
+阶段六：核心知识点与避坑解惑 (FAQ)
+Q1：为什么 5000 端口一定对应 Wrist (腕部) 相机？
+因为 GELLO 的主循环代码 run_env.py 开头硬编码了：wrist_camera_port: int = 5000 以及 base_camera_port: int = 5001。这决定了接收端去哪个端口拉数据，所以我们在 launch_camera_nodes.py 里必须让 D415 推流到 5000 端口。
+
+Q2：如何确认相机的帧率 (FPS) 和分辨率？
+在 GELLO 的 gello/cameras/realsense_camera.py 代码中，初始化配置已被写死：
+config.enable_stream(..., 640, 480, ..., 30)。
+因此，硬件实际输出的分辨率就是 640x480，帧率是 30。
+
+Q3：既然已经写死了，为什么还要在 LeRobot 接口里强调“严格匹配”？
+这是一种防御性编程的忠告。LeRobot 的 Shape 检查极其严苛。如果你未来嫌 640x480 不够清晰，跑去 realsense_camera.py 里改成了 1280x720，但忘记在 LeRobotSaveInterface 中同步把 shape 结构改为 (3, 720, 1280)，LeRobot 接收到图像时会立刻报错闪退，导致你采数的心血白费。
+
+Q4：在训练 VLA 前，需要给 D415 和 D435 做手眼标定吗？
+完全不需要，但有一个死规则！
+现在的端到端 VLA（如 Pi0, OpenVLA, ACT）做的是“图像到动作的隐式映射（模仿学习）”，不需要明确的外参矩阵。
+死规则是：相机的物理位置绝对、绝对不能动！
+腕部相机必须用强力支架死死锁在机械臂末端；全局相机必须稳稳固定在桌子上。如果在采数期间或者测试期间相机被碰歪了哪怕一两厘米，模型学到的视觉映射就会彻底失效。(注：除非你未来玩 3D 点云驱动的模型，才需要用标定板做严格的手眼标定。)
+
+Q5：家爪开合度调整
+
