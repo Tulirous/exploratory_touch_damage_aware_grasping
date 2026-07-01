@@ -1,0 +1,63 @@
+project:
+  name: lawam_aligned_dinov3_latent_action_idm
+  seed: 42
+
+data:
+  # Episode-level manifest. Each row should contain:
+  # episode_id, base_video_path, wrist_video_path, robot_state_path.
+  episode_manifest: data/manifests/episodes.jsonl
+  latent_manifest: data/manifests/idm_train.jsonl
+  val_manifest: data/manifests/idm_val.jsonl
+  latent_dir: data/latents/dino_idm
+  fps: 30
+  future_offset_frames: 30
+  stride_frames: 15
+  max_windows_per_episode: null
+  state_dim: 7
+  num_workers: 2
+
+dino:
+  # LaWAM-aligned visual encoder: the paper uses a frozen distilled DINOv3
+  # ViT-B/16 encoder. Keep this frozen; train IDM/LaWM on top of its features.
+  backend: transformers
+  # This is the expected Hugging Face-style id for the DINOv3 ViT-B/16
+  # checkpoint. If the server uses an official local checkpoint or a different
+  # registry name, change only this field.
+  model_name: facebook/dinov3-vitb16-pretrain-lvd1689m
+  image_size: 224
+  # LaWAM operates on spatial DINO features. The current runnable first stage
+  # keeps patch tokens instead of mean-pooling them into one vector.
+  feature_mode: patch_tokens
+  # Standard ViT encoders expose a CLS token before patch tokens. If using a
+  # DINOv3 variant with extra register tokens, increase this value accordingly.
+  num_prefix_tokens: 1
+  view_fusion: concat
+  # 224x224 with ViT-B/16 -> 14x14 patch tokens per view, two views -> 392.
+  num_visual_tokens: 392
+  visual_token_dim: 768
+  device: cuda
+  precision: fp16
+
+model:
+  visual_token_dim: 768
+  max_visual_tokens: 512
+  state_dim: 7
+  latent_action_dim: 128
+  hidden_dim: 768
+  encoder_layers: 8
+  decoder_layers: 8
+  num_heads: 12
+  ffn_dim: 3072
+  dropout: 0.1
+
+training:
+  device: cuda
+  batch_size: 8
+  epochs: 100
+  lr: 0.0001
+  weight_decay: 0.01
+  loss_future_latent: 1.0
+  loss_state: 0.1
+  loss_kl: 0.0001
+  loss_action_smooth: 0.0001
+  checkpoint_dir: checkpoints/latent_action_idm

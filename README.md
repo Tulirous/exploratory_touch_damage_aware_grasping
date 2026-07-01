@@ -151,7 +151,7 @@ Exploratory Touch for Damage-Aware Grasp Synthesis of Ultra-Soft Fragile Objects
 
 ## WAM 融合定位
 
-本项目中的 WAM 建议采用 Fast-WAM-style latent outcome prediction：
+本项目中的 WAM 建议采用 Fast-WAM-style latent future prediction：
 
 ```text
 视觉 / 视频 latent:
@@ -167,7 +167,15 @@ Exploratory Touch for Damage-Aware Grasp Synthesis of Ultra-Soft Fragile Objects
   抓取成功率、滑移风险、损伤风险、形变量、恢复率
 ```
 
-第一版模型先做 `visual_latent + tactile_force_latent + candidate_action_latent -> future_outcome`，即对候选动作打分。推理时不生成未来视频；未来视频建模只作为可选训练信号或预训练 backbone 的来源。
+模型应显式学习：
+
+```text
+visual_latent + tactile_force_latent + candidate_action_latent
+  -> future_contact_latent
+  -> future_outcome
+```
+
+也就是说，先在 latent 空间预测动作执行后的未来接触/视觉状态，再由该未来 latent 判断损伤、滑移、形变和成功率。推理时不强制生成 RGB 未来视频，但需要保留 “state-action -> future latent” 的 WAM 结构，避免退化成普通 VLA/action outcome classifier。
 
 ## 当前工程路线
 
@@ -178,19 +186,24 @@ frozen visual/video backbone
   -> visual_latent
 
 task instruction
-  -> text_instruction_latent
+  -> task_spec for candidate action generation
 
 tactile-force adapter
   -> tactile_force_latent
 
-candidate action encoder
+task-conditioned candidate action generator
+  -> candidate actions
+
+MCF-Proto candidate action encoder
   -> action_latent
 
-DiT-style fusion transformer
+FutureLatentDiffusion / FutureContactDiT
+  -> future_contact_latent
+  -> outcome heads
   -> success / slip / damage / deformation / release safety
 ```
 
-当前文本指令用于条件化候选动作后果预测和安全动作选择；它还不是完整的文本到动作生成器。真实动作仍需要来自 GELLO 示范、VLA proposal 或搜索采样的 candidate action chunks。
+文本指令用于解析任务目标和目标物体，并指导候选动作生成；损伤、滑移和形变预测保持为客观物理后果预测，不由文本措辞改变。
 
 工程文件：
 
@@ -205,6 +218,7 @@ DiT-style fusion transformer
 ## 项目文档
 
 - [research_brief.md](research_brief.md)：初始文献脉络、工作流程、网络选择、数据采集、具身智能/VLA 关系
+- [model.md](model.md)：当前 FastWAM-Fragile 模型框架、模块作用、semantic feature 分支目标
 - [docs/fastwam_short_term_plan.md](docs/fastwam_short_term_plan.md)：短期执行目标：先复现官方 Fast-WAM，再迁移到本项目
 - [docs/fastwam_server_setup_5090.md](docs/fastwam_server_setup_5090.md)：RTX 5090D 服务器部署与数据集存放建议
 - [docs/fastwam_latent_adapter.md](docs/fastwam_latent_adapter.md)：Fast-WAM visual latent adapter 的使用范围和运行命令

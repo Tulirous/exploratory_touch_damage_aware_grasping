@@ -1,0 +1,2 @@
+"""Latent-action IDM subproject."""
+
