@@ -7,21 +7,15 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from latent_action_idm.checkpoint_utils import remap_legacy_stage1_state_dict
 from latent_action_idm.datasets import LatentIDMDataset
-from latent_action_idm.models import LatentActionIDM
+from latent_action_idm.models import Stage1DiTLaWAM
+from latent_action_idm.train_idm import move_batch
 from latent_action_idm.utils import load_config, seed_everything
 
 
-def move_batch(batch: dict, device: torch.device) -> dict:
-    moved = {}
-    for key, value in batch.items():
-        moved[key] = value.to(device) if torch.is_tensor(value) else value
-    return moved
-
-
-def build_model(cfg: dict) -> LatentActionIDM:
-    return LatentActionIDM(
+def build_model(cfg: dict) -> Stage1DiTLaWAM:
+    diffusion = cfg.get("diffusion", {})
+    return Stage1DiTLaWAM(
         visual_token_dim=int(cfg["model"]["visual_token_dim"]),
         state_dim=int(cfg["model"]["state_dim"]),
         latent_action_dim=int(cfg["model"]["latent_action_dim"]),
@@ -32,12 +26,15 @@ def build_model(cfg: dict) -> LatentActionIDM:
         ffn_dim=int(cfg["model"].get("ffn_dim", 3072)),
         dropout=float(cfg["model"].get("dropout", 0.1)),
         max_visual_tokens=int(cfg["model"].get("max_visual_tokens", 512)),
+        num_diffusion_steps=int(diffusion.get("num_steps", 1000)),
+        beta_start=float(diffusion.get("beta_start", 1e-4)),
+        beta_end=float(diffusion.get("beta_end", 2e-2)),
     )
 
 
 def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tuple[torch.Tensor, dict]:
+    loss_noise = F.mse_loss(outputs["predicted_noise"], outputs["noise"])
     loss_state = F.mse_loss(outputs["predicted_state_future"], batch["state_future"])
-    loss_future_latent = F.mse_loss(outputs["predicted_visual_future"], batch["visual_future"])
     loss_kl = -0.5 * torch.mean(
         1 + outputs["latent_logvar"] - outputs["latent_mu"].pow(2) - outputs["latent_logvar"].exp()
     )
@@ -45,15 +42,15 @@ def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tu
 
     weights = cfg["training"]
     total = (
-        float(weights.get("loss_future_latent", 1.0)) * loss_future_latent
+        float(weights.get("loss_noise", 1.0)) * loss_noise
         + float(weights.get("loss_state", 0.1)) * loss_state
         + float(weights.get("loss_kl", 0.0001)) * loss_kl
-        + float(weights.get("loss_action_smooth", 0.001)) * loss_action_smooth
+        + float(weights.get("loss_action_smooth", 0.0001)) * loss_action_smooth
     )
     metrics = {
         "loss": float(total.detach().cpu()),
+        "noise": float(loss_noise.detach().cpu()),
         "state": float(loss_state.detach().cpu()),
-        "future_latent": float(loss_future_latent.detach().cpu()),
         "kl": float(loss_kl.detach().cpu()),
         "action_l2": float(loss_action_smooth.detach().cpu()),
     }
@@ -61,7 +58,7 @@ def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tu
 
 
 def run_epoch(
-    model: LatentActionIDM,
+    model: Stage1DiTLaWAM,
     loader: DataLoader,
     cfg: dict,
     device: torch.device,
@@ -69,7 +66,7 @@ def run_epoch(
 ) -> dict[str, float]:
     is_train = optimizer is not None
     model.train(is_train)
-    totals = {"loss": 0.0, "state": 0.0, "future_latent": 0.0, "kl": 0.0, "action_l2": 0.0}
+    totals = {"loss": 0.0, "noise": 0.0, "state": 0.0, "kl": 0.0, "action_l2": 0.0}
 
     for batch in loader:
         batch = move_batch(batch, device)
@@ -88,7 +85,7 @@ def run_epoch(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="latent_action_idm/configs/dino_idm.yaml")
+    parser.add_argument("--config", default="latent_action_idm/configs/dit_lawam.yaml")
     parser.add_argument("--resume", default=None)
     args = parser.parse_args()
 
@@ -125,18 +122,11 @@ def main() -> None:
         weight_decay=float(cfg["training"]["weight_decay"]),
     )
     start_epoch = 0
-
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
-        try:
-            model.load_state_dict(ckpt["model"])
-        except RuntimeError:
-            model.load_state_dict(remap_legacy_stage1_state_dict(ckpt["model"]))
+        model.load_state_dict(ckpt["model"])
         if "optimizer" in ckpt:
-            try:
-                optimizer.load_state_dict(ckpt["optimizer"])
-            except ValueError:
-                print("warning: optimizer state is incompatible with the refactored model; starting optimizer fresh")
+            optimizer.load_state_dict(ckpt["optimizer"])
         start_epoch = int(ckpt.get("epoch", -1)) + 1
 
     checkpoint_dir = Path(cfg["training"]["checkpoint_dir"])
@@ -152,12 +142,14 @@ def main() -> None:
             val_metrics = train_metrics
 
         print(
-            "epoch={:03d} train_loss={:.6f} train_state={:.6f} "
-            "val_loss={:.6f} val_state={:.6f}".format(
+            "epoch={:03d} train_loss={:.6f} train_noise={:.6f} train_state={:.6f} "
+            "val_loss={:.6f} val_noise={:.6f} val_state={:.6f}".format(
                 epoch,
                 train_metrics["loss"],
+                train_metrics["noise"],
                 train_metrics["state"],
                 val_metrics["loss"],
+                val_metrics["noise"],
                 val_metrics["state"],
             )
         )
@@ -178,3 +170,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

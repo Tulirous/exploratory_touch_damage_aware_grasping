@@ -43,6 +43,29 @@ DINOv3 spatial patch tokens
   -> predicted future DINO patch tokens
 ```
 
+工程上已经拆成可单独调试的模块：
+
+```text
+latent_action_idm/models/common.py
+  VisualTokenProjector
+  AdaLNBlock
+  MLP
+
+latent_action_idm/models/inverse_dynamics.py
+  InverseDynamicsTransformer
+  输入: visual_t, visual_future, state_t
+  输出: latent_mu, latent_logvar, latent_action
+
+latent_action_idm/models/latent_world_model.py
+  LatentWorldModelDecoder
+  输入: visual_t, latent_action
+  输出: predicted_visual_future
+
+latent_action_idm/models/stage1_lawam.py
+  Stage1LaWAM
+  组合: IDM + LaWM decoder + auxiliary state predictor
+```
+
 为了适配双相机，当前默认把两个视角的 patch tokens 沿 token 维拼接：
 
 ```text
@@ -124,7 +147,7 @@ stride = 15
 
 30 FPS 下相当于用当前帧预测 1 秒后的状态，每 0.5 秒采一个样本。你的 60 条数据当前约生成 655 个训练窗口。
 
-## Step 2: 训练 IDM
+## Step 2: 训练 Stage-1 LaWAM
 
 ```bash
 python -m latent_action_idm.train_idm \
@@ -138,7 +161,15 @@ checkpoints/latent_action_idm/latest.pt
 checkpoints/latent_action_idm/best.pt
 ```
 
-## 当前 IDM 接口
+如需从重构前的 checkpoint 继续训练：
+
+```bash
+python -m latent_action_idm.train_idm \
+  --config latent_action_idm/configs/dino_idm.yaml \
+  --resume checkpoints/latent_action_idm/best.pt
+```
+
+## 模块接口
 
 训练样本包含：
 
@@ -158,6 +189,29 @@ predicted_visual_future: [392, 768]
 ```
 
 其中 `latent_action` 是后续接入 LaWM decoder、FutureContactDiT、触觉/力觉 adapter 的中间动作表示。
+
+单模块 smoke test：
+
+```bash
+python -m latent_action_idm.scripts.smoke_test_stage1_modules \
+  --batch-size 2 \
+  --num-tokens 392 \
+  --token-dim 768 \
+  --state-dim 7 \
+  --latent-dim 128 \
+  --hidden-dim 128 \
+  --layers 1 \
+  --heads 4 \
+  --device cpu
+```
+
+输出应包含：
+
+```text
+IDM latent_mu: (2, 128)
+LaWM predicted future: (2, 392, 768)
+Stage1 predicted_state_future: (2, 7)
+```
 
 ## 后续创新修改路线
 
@@ -180,4 +234,77 @@ tactile / force / gripper feedback
 2. 将 encoder_layers / decoder_layers 提升到 LaWAM 复现规模
 3. 加入 tactile-force encoder 和 contact gate
 4. 加入 damage/slip/deformation heads
+```
+
+## DiT-LaWM 实验路线
+
+如果要验证 diffusion Transformer 作为 LaWM decoder，使用独立配置和训练入口：
+
+```bash
+python -m latent_action_idm.scripts.smoke_test_dit_lawam \
+  --batch-size 2 \
+  --num-tokens 392 \
+  --token-dim 768 \
+  --state-dim 7 \
+  --latent-dim 128 \
+  --hidden-dim 128 \
+  --layers 1 \
+  --heads 4 \
+  --device cpu
+```
+
+训练：
+
+```bash
+python -m latent_action_idm.train_dit_lawam \
+  --config latent_action_idm/configs/dit_lawam.yaml
+```
+
+DiT-LaWM 输入输出：
+
+```text
+clean future tokens u_T:       [B, 392, 768]
+random noise epsilon:          [B, 392, 768]
+diffusion timestep tau:        [B]
+noisy future tokens x_tau:     [B, 392, 768]
+current visual tokens u_t:     [B, 392, 768]
+latent action z from IDM:      [B, 128]
+
+DiffusionLatentWorldModel:
+  x_tau + u_t + z + tau
+    -> predicted noise epsilon_hat [B, 392, 768]
+```
+
+训练目标：
+
+```text
+L_dit = MSE(epsilon_hat, epsilon)
+```
+
+完整 Stage1DiTLaWAM：
+
+```text
+u_t + u_T + state_t
+  -> InverseDynamicsTransformer
+  -> z
+
+u_T + noise -> x_tau
+
+x_tau + u_t + z + tau
+  -> DiffusionLatentWorldModel
+  -> predicted noise
+  -> predicted future tokens
+```
+
+建议实验顺序：
+
+```text
+1. 你的 60 episodes:
+   验证代码、显存、loss 是否下降。
+
+2. lerobot/droid_100:
+   小规模 sanity check。
+
+3. lerobot/droid_1.0.1:
+   正式验证 DiT-LaWM 是否优于 deterministic LaWM。
 ```
