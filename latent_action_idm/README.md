@@ -308,3 +308,95 @@ x_tau + u_t + z + tau
 3. lerobot/droid_1.0.1:
    正式验证 DiT-LaWM 是否优于 deterministic LaWM。
 ```
+
+## Future Token Evaluator
+
+当前有两类 evaluator：
+
+```text
+1. metric_future_scores
+   无监督度量，不需要训练，直接比较 u_T_hat 和真实 u_T。
+
+2. FutureTokenEvaluator
+   可训练网络，后续有 task success / goal progress / risk 标签后使用。
+```
+
+FutureTokenEvaluator 输入输出：
+
+```text
+输入:
+  visual_t:                  [B, 392, 768]
+  predicted_visual_future:   [B, 392, 768]
+  state_t optional:          [B, 7]
+  latent_action optional:    [B, 128]
+
+输出:
+  goal_progress: [B]
+  success_logit: [B]
+  risk_logit:    [B]
+  value:         [B]
+```
+
+smoke test：
+
+```bash
+python -m latent_action_idm.scripts.smoke_test_future_evaluator \
+  --batch-size 2 \
+  --num-tokens 392 \
+  --token-dim 768 \
+  --state-dim 7 \
+  --latent-dim 128 \
+  --hidden-dim 128 \
+  --layers 1 \
+  --heads 4 \
+  --device cpu
+```
+
+## DiT-LaWM Evaluation
+
+训练 DiT 后，用这个脚本评估 clean future token 质量：
+
+```bash
+python -m latent_action_idm.scripts.analyze_dit_lawam \
+  --checkpoint checkpoints/dit_lawam/best.pt \
+  --manifest data/manifests/idm_val.jsonl \
+  --split-name val \
+  --output-dir outputs/dit_lawam \
+  --batch-size 4 \
+  --timestep 500 \
+  --device cuda
+```
+
+输出：
+
+```text
+outputs/dit_lawam/val.metrics.txt
+outputs/dit_lawam/val.csv
+outputs/dit_lawam/val.npz
+outputs/dit_lawam/val_base_patch_mse_14x14.csv
+outputs/dit_lawam/val_wrist_patch_mse_14x14.csv
+```
+
+重点指标：
+
+```text
+future_mse_per_token
+identity_future_mse_per_token
+future_improvement_vs_identity
+noise_mse_per_token
+transition_delta_cosine
+state_improvement_vs_identity
+```
+
+判断标准：
+
+```text
+future_improvement_vs_identity > 0
+  说明 DiT-LaWM 预测的 future tokens 比直接使用 u_t 更接近真实 u_T。
+
+transition_delta_cosine 越高
+  说明预测的视觉变化方向越接近真实视觉变化方向。
+
+patch_mse_14x14
+  用于定位 base / wrist 视角中哪些区域的未来预测误差最大。
+```

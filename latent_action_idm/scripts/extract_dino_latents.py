@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from datasets.video_pair_reader import read_base_wrist_frames
+from datasets.video_pair_reader import read_video_frame
 from latent_action_idm.models.dino_encoder import DINOConfig, DINOFeatureExtractor, encode_two_views
 from latent_action_idm.utils import load_config, read_jsonl, seed_everything, write_jsonl
 
@@ -53,6 +53,7 @@ def extract_episode_windows(
     extractor: DINOFeatureExtractor,
     repo_root: Path,
     output_dir: Path,
+    resume: bool = False,
 ) -> list[dict]:
     episode_id = row["episode_id"]
     base_video = resolve_path(row["base_video_path"], repo_root)
@@ -76,33 +77,28 @@ def extract_episode_windows(
     view_fusion = cfg["dino"].get("view_fusion", "concat")
 
     for sample_idx, (t_index, future_index) in enumerate(windows):
-        base_t, wrist_t = read_base_wrist_frames(
-            base_video,
-            wrist_video,
-            frame_index=base_frame_offset + t_index,
-        )
-        base_f, wrist_f = read_base_wrist_frames(
-            base_video,
-            wrist_video,
-            frame_index=base_frame_offset + future_index,
-        )
-        if wrist_frame_offset != base_frame_offset:
-            _, wrist_t = read_base_wrist_frames(
-                base_video,
-                wrist_video,
-                frame_index=wrist_frame_offset + t_index,
+        sample_id = f"{episode_id}_{sample_idx:04d}_t{t_index}_f{future_index}"
+        latent_path = output_dir / f"{sample_id}.npz"
+        if resume and latent_path.exists():
+            rows.append(
+                {
+                    "episode_id": episode_id,
+                    "sample_id": sample_id,
+                    "t_index": t_index,
+                    "future_index": future_index,
+                    "latent_path": str(latent_path),
+                }
             )
-            _, wrist_f = read_base_wrist_frames(
-                base_video,
-                wrist_video,
-                frame_index=wrist_frame_offset + future_index,
-            )
+            continue
+
+        base_t = read_video_frame(base_video, frame_index=base_frame_offset + t_index)
+        wrist_t = read_video_frame(wrist_video, frame_index=wrist_frame_offset + t_index)
+        base_f = read_video_frame(base_video, frame_index=base_frame_offset + future_index)
+        wrist_f = read_video_frame(wrist_video, frame_index=wrist_frame_offset + future_index)
 
         visual_t = encode_two_views(extractor, base_t, wrist_t, view_fusion=view_fusion).cpu().numpy()
         visual_future = encode_two_views(extractor, base_f, wrist_f, view_fusion=view_fusion).cpu().numpy()
 
-        sample_id = f"{episode_id}_{sample_idx:04d}_t{t_index}_f{future_index}"
-        latent_path = output_dir / f"{sample_id}.npz"
         np.savez_compressed(
             latent_path,
             visual_t=visual_t.astype(np.float32),
@@ -120,7 +116,8 @@ def extract_episode_windows(
             }
         )
 
-    print(f"{episode_id}: extracted {len(rows)} windows")
+    existing_count = sum(1 for sample in rows if Path(sample["latent_path"]).exists())
+    print(f"{episode_id}: indexed {len(rows)} windows ({existing_count} files available)")
     return rows
 
 
@@ -143,6 +140,11 @@ def main() -> None:
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--device", default=None)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip windows whose .npz files already exist and rebuild manifests from existing/new files.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -154,8 +156,10 @@ def main() -> None:
     train_out = Path(args.train_out or cfg["data"]["latent_manifest"])
     val_out = Path(args.val_out or cfg["data"]["val_manifest"])
 
-    if output_dir.exists() and any(output_dir.iterdir()) and not args.overwrite:
-        raise FileExistsError(f"{output_dir} is not empty. Pass --overwrite to append/overwrite samples.")
+    if args.resume and args.overwrite:
+        raise ValueError("--resume and --overwrite are mutually exclusive.")
+    if output_dir.exists() and any(output_dir.iterdir()) and not args.overwrite and not args.resume:
+        raise FileExistsError(f"{output_dir} is not empty. Pass --overwrite to append/overwrite samples, or --resume to skip existing samples.")
 
     device_name = args.device or cfg["dino"].get("device", "cuda")
     device = torch.device(device_name if torch.cuda.is_available() or device_name == "cpu" else "cpu")
@@ -172,7 +176,7 @@ def main() -> None:
 
     all_rows = []
     for row in read_jsonl(episode_manifest):
-        all_rows.extend(extract_episode_windows(row, cfg, extractor, repo_root, output_dir))
+        all_rows.extend(extract_episode_windows(row, cfg, extractor, repo_root, output_dir, resume=args.resume))
 
     train_rows, val_rows = split_rows(all_rows, args.val_ratio)
     write_jsonl(train_out, train_rows)

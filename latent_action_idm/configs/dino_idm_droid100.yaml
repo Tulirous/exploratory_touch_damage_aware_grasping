@@ -1,0 +1,55 @@
+project:
+  name: droid100_lawam_stage1_idm
+  seed: 42
+
+data:
+  episode_manifest: data/manifests/droid100_episodes.jsonl
+  latent_manifest: data/manifests/droid100_train.jsonl
+  val_manifest: data/manifests/droid100_val.jsonl
+  latent_dir: data/latents/dino_droid100
+  fps: 15
+  # These fields document the latent extraction setting. Training reads the
+  # already extracted .npz windows from latent_manifest / val_manifest.
+  future_offset_frames: 30
+  stride_frames: 15
+  max_windows_per_episode: null
+  state_dim: 7
+  num_workers: 2
+
+dino:
+  backend: transformers
+  model_name: /data/chy/huggingface/dinov3-vitb16
+  image_size: 224
+  feature_mode: patch_tokens
+  num_prefix_tokens: 1
+  view_fusion: concat
+  # The actual local DINOv3 checkpoint may produce 400 tokens for two views.
+  # The model uses max_visual_tokens below, so this value is informational.
+  num_visual_tokens: 400
+  visual_token_dim: 768
+  device: cuda
+  precision: fp16
+
+model:
+  visual_token_dim: 768
+  max_visual_tokens: 512
+  state_dim: 7
+  latent_action_dim: 128
+  hidden_dim: 768
+  encoder_layers: 8
+  decoder_layers: 8
+  num_heads: 12
+  ffn_dim: 3072
+  dropout: 0.1
+
+training:
+  device: cuda
+  batch_size: 8
+  epochs: 100
+  lr: 0.0001
+  weight_decay: 0.01
+  loss_future_latent: 1.0
+  loss_state: 0.1
+  loss_kl: 0.0001
+  loss_action_smooth: 0.0001
+  checkpoint_dir: checkpoints/latent_action_idm_droid100

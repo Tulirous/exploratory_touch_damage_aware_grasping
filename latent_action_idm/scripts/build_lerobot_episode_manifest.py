@@ -33,7 +33,13 @@ def parse_file_index(path: Path) -> int:
     return int(path.stem.split("-")[-1])
 
 
-def export_episode_rows(root: Path, state_dir: Path, state_key: str) -> list[dict]:
+def export_episode_rows(
+    root: Path,
+    state_dir: Path,
+    state_key: str,
+    base_video_key: str,
+    wrist_video_key: str,
+) -> list[dict]:
     info = load_info(root)
     rows = []
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -46,8 +52,8 @@ def export_episode_rows(root: Path, state_dir: Path, state_key: str) -> list[dic
         if missing:
             raise KeyError(f"{parquet_path} missing columns: {sorted(missing)}")
 
-        base_video = video_path(root, info, "observation.images.base", file_index)
-        wrist_video = video_path(root, info, "observation.images.wrist", file_index)
+        base_video = video_path(root, info, base_video_key, file_index)
+        wrist_video = video_path(root, info, wrist_video_key, file_index)
         if not base_video.exists():
             raise FileNotFoundError(base_video)
         if not wrist_video.exists():
@@ -75,6 +81,8 @@ def export_episode_rows(root: Path, state_dir: Path, state_key: str) -> list[dic
                     "episode_index": int(episode_index),
                     "file_index": file_index,
                     "num_frames": int(len(group)),
+                    "base_video_key": base_video_key,
+                    "wrist_video_key": wrist_video_key,
                     "base_video_path": str(base_video),
                     "wrist_video_path": str(wrist_video),
                     "base_frame_offset": video_frame_offset,
@@ -92,14 +100,21 @@ def main() -> None:
     parser.add_argument("--out", default="data/manifests/episodes.jsonl")
     parser.add_argument("--state-dir", default="data/processed/lerobot_states")
     parser.add_argument("--state-key", default="observation.state")
+    parser.add_argument("--base-video-key", default="observation.images.base")
+    parser.add_argument("--wrist-video-key", default="observation.images.wrist")
     args = parser.parse_args()
 
     root = Path(args.lerobot_root)
-    rows = export_episode_rows(root, Path(args.state_dir), args.state_key)
+    rows = export_episode_rows(
+        root,
+        Path(args.state_dir),
+        args.state_key,
+        args.base_video_key,
+        args.wrist_video_key,
+    )
     write_jsonl(args.out, rows)
     print(f"wrote {len(rows)} episode rows -> {args.out}")
 
 
 if __name__ == "__main__":
     main()
-
