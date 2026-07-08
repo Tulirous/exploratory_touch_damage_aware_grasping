@@ -19,15 +19,19 @@ class LatentWorldModelDecoder(nn.Module):
         ffn_dim: int = 3072,
         dropout: float = 0.1,
         max_visual_tokens: int = 512,
+        num_views: int = 0,
+        residual_prediction: bool = False,
     ) -> None:
         super().__init__()
         self.visual_token_dim = visual_token_dim
         self.latent_action_dim = latent_action_dim
         self.hidden_dim = hidden_dim
+        self.residual_prediction = residual_prediction
         self.visual_projector = VisualTokenProjector(
             visual_token_dim=visual_token_dim,
             hidden_dim=hidden_dim,
             max_visual_tokens=max_visual_tokens,
+            num_views=num_views,
         )
         self.current_type = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.latent_to_hidden = nn.Sequential(
@@ -56,5 +60,7 @@ class LatentWorldModelDecoder(nn.Module):
         cond = self.latent_to_hidden(latent_action)
         for block in self.blocks:
             tokens = block(tokens, cond)
-        return self.output_proj(self.norm(tokens))
-
+        delta_or_future = self.output_proj(self.norm(tokens))
+        if self.residual_prediction:
+            return visual_t + delta_or_future
+        return delta_or_future

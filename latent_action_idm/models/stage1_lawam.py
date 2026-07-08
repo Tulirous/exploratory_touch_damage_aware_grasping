@@ -13,7 +13,7 @@ class Stage1LaWAM(nn.Module):
 
     Modules are intentionally exposed as public attributes:
 
-    - inverse_dynamics: q(z | u_t, u_T, state_t)
+    - inverse_dynamics: q(z | u_t, u_T, state_t) or q(z | u_t, u_T)
     - latent_world_model: p(u_T | u_t, z)
     - state_predictor: auxiliary state consistency head
     """
@@ -30,12 +30,18 @@ class Stage1LaWAM(nn.Module):
         ffn_dim: int = 3072,
         dropout: float = 0.1,
         max_visual_tokens: int = 512,
+        use_state_in_idm: bool = True,
+        num_views: int = 0,
+        residual_future_prediction: bool = False,
     ) -> None:
         super().__init__()
         self.visual_token_dim = visual_token_dim
         self.state_dim = state_dim
         self.latent_action_dim = latent_action_dim
         self.hidden_dim = hidden_dim
+        self.use_state_in_idm = use_state_in_idm
+        self.num_views = num_views
+        self.residual_future_prediction = residual_future_prediction
 
         self.inverse_dynamics = InverseDynamicsTransformer(
             visual_token_dim=visual_token_dim,
@@ -47,6 +53,8 @@ class Stage1LaWAM(nn.Module):
             ffn_dim=ffn_dim,
             dropout=dropout,
             max_visual_tokens=max_visual_tokens,
+            use_state_condition=use_state_in_idm,
+            num_views=num_views,
         )
         self.latent_world_model = LatentWorldModelDecoder(
             visual_token_dim=visual_token_dim,
@@ -57,6 +65,8 @@ class Stage1LaWAM(nn.Module):
             ffn_dim=ffn_dim,
             dropout=dropout,
             max_visual_tokens=max_visual_tokens,
+            num_views=num_views,
+            residual_prediction=residual_future_prediction,
         )
         self.state_predictor = MLP(
             state_dim + latent_action_dim,
@@ -100,4 +110,3 @@ class Stage1LaWAM(nn.Module):
 
 # Backward-compatible name used by existing training scripts.
 LatentActionIDM = Stage1LaWAM
-

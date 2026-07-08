@@ -20,17 +20,21 @@ class InverseDynamicsTransformer(nn.Module):
         ffn_dim: int = 3072,
         dropout: float = 0.1,
         max_visual_tokens: int = 512,
+        use_state_condition: bool = True,
+        num_views: int = 0,
     ) -> None:
         super().__init__()
         self.visual_token_dim = visual_token_dim
         self.state_dim = state_dim
         self.latent_action_dim = latent_action_dim
         self.hidden_dim = hidden_dim
+        self.use_state_condition = use_state_condition
 
         self.visual_projector = VisualTokenProjector(
             visual_token_dim=visual_token_dim,
             hidden_dim=hidden_dim,
             max_visual_tokens=max_visual_tokens,
+            num_views=num_views,
         )
         self.state_token = nn.Linear(state_dim, hidden_dim)
         self.inverse_cls = nn.Parameter(torch.zeros(1, 1, hidden_dim))
@@ -89,9 +93,11 @@ class InverseDynamicsTransformer(nn.Module):
         batch_size = visual_t.shape[0]
         current = self.visual_projector(visual_t) + self.current_type
         future = self.visual_projector(visual_future) + self.future_type
-        state = self.state_token(state_t).unsqueeze(1) + self.state_type
         cls = self.inverse_cls.expand(batch_size, -1, -1)
-        return torch.cat([cls, state, current, future], dim=1)
+        if self.use_state_condition:
+            state = self.state_token(state_t).unsqueeze(1) + self.state_type
+            return torch.cat([cls, state, current, future], dim=1)
+        return torch.cat([cls, current, future], dim=1)
 
     def sample_latent(
         self,
@@ -110,4 +116,3 @@ class InverseDynamicsTransformer(nn.Module):
         nn.init.normal_(self.current_type, std=0.02)
         nn.init.normal_(self.future_type, std=0.02)
         nn.init.normal_(self.state_type, std=0.02)
-

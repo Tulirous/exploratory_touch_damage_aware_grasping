@@ -3,36 +3,54 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from latent_action_idm.checkpoint_utils import remap_legacy_stage1_state_dict
 from latent_action_idm.datasets import LatentIDMDataset
 from latent_action_idm.models import Stage1DiTLaWAM
-from latent_action_idm.train_idm import format_duration, move_batch
+from latent_action_idm.train_dit_lawam import build_model
+from latent_action_idm.train_idm import format_duration, move_batch, prepare_visual_stats
 from latent_action_idm.utils import load_config, seed_everything
 
 
-def build_model(cfg: dict) -> Stage1DiTLaWAM:
-    diffusion = cfg.get("diffusion", {})
-    return Stage1DiTLaWAM(
-        visual_token_dim=int(cfg["model"]["visual_token_dim"]),
-        state_dim=int(cfg["model"]["state_dim"]),
-        latent_action_dim=int(cfg["model"]["latent_action_dim"]),
-        hidden_dim=int(cfg["model"]["hidden_dim"]),
-        encoder_layers=int(cfg["model"].get("encoder_layers", 8)),
-        decoder_layers=int(cfg["model"].get("decoder_layers", 8)),
-        num_heads=int(cfg["model"].get("num_heads", 12)),
-        ffn_dim=int(cfg["model"].get("ffn_dim", 3072)),
-        dropout=float(cfg["model"].get("dropout", 0.1)),
-        max_visual_tokens=int(cfg["model"].get("max_visual_tokens", 512)),
-        num_diffusion_steps=int(diffusion.get("num_steps", 1000)),
-        beta_start=float(diffusion.get("beta_start", 1e-4)),
-        beta_end=float(diffusion.get("beta_end", 2e-2)),
-        use_state_in_idm=bool(cfg["model"].get("use_state_in_idm", True)),
-        num_views=int(cfg["model"].get("num_views", 0)),
-    )
+def extract_module_state(
+    state_dict: dict[str, torch.Tensor],
+    prefix: str,
+) -> dict[str, torch.Tensor]:
+    prefix_with_dot = f"{prefix}."
+    return {
+        key.removeprefix(prefix_with_dot): value
+        for key, value in state_dict.items()
+        if key.startswith(prefix_with_dot)
+    }
+
+
+def load_idm_teacher(model: Stage1DiTLaWAM, checkpoint_path: Path, device: torch.device) -> dict[str, Any]:
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    state_dict = ckpt["model"]
+    try:
+        inverse_state = extract_module_state(state_dict, "inverse_dynamics")
+        state_predictor_state = extract_module_state(state_dict, "state_predictor")
+        model.inverse_dynamics.load_state_dict(inverse_state)
+        model.state_predictor.load_state_dict(state_predictor_state)
+    except RuntimeError:
+        remapped = remap_legacy_stage1_state_dict(state_dict)
+        inverse_state = extract_module_state(remapped, "inverse_dynamics")
+        state_predictor_state = extract_module_state(remapped, "state_predictor")
+        model.inverse_dynamics.load_state_dict(inverse_state)
+        model.state_predictor.load_state_dict(state_predictor_state)
+
+    for param in model.inverse_dynamics.parameters():
+        param.requires_grad_(False)
+    for param in model.state_predictor.parameters():
+        param.requires_grad_(False)
+    model.inverse_dynamics.eval()
+    model.state_predictor.eval()
+    return ckpt
 
 
 def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tuple[torch.Tensor, dict]:
@@ -46,9 +64,9 @@ def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tu
     weights = cfg["training"]
     total = (
         float(weights.get("loss_noise", 1.0)) * loss_noise
-        + float(weights.get("loss_state", 0.1)) * loss_state
-        + float(weights.get("loss_kl", 0.0001)) * loss_kl
-        + float(weights.get("loss_action_smooth", 0.0001)) * loss_action_smooth
+        + float(weights.get("loss_state", 0.0)) * loss_state
+        + float(weights.get("loss_kl", 0.0)) * loss_kl
+        + float(weights.get("loss_action_smooth", 0.0)) * loss_action_smooth
     )
     metrics = {
         "loss": float(total.detach().cpu()),
@@ -60,6 +78,11 @@ def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tu
     return total, metrics
 
 
+def set_frozen_modules_eval(model: Stage1DiTLaWAM) -> None:
+    model.inverse_dynamics.eval()
+    model.state_predictor.eval()
+
+
 def run_epoch(
     model: Stage1DiTLaWAM,
     loader: DataLoader,
@@ -69,6 +92,7 @@ def run_epoch(
 ) -> dict[str, float]:
     is_train = optimizer is not None
     model.train(is_train)
+    set_frozen_modules_eval(model)
     totals = {"loss": 0.0, "noise": 0.0, "state": 0.0, "kl": 0.0, "action_l2": 0.0}
 
     for batch in loader:
@@ -88,7 +112,8 @@ def run_epoch(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="latent_action_idm/configs/dit_lawam.yaml")
+    parser.add_argument("--config", default="latent_action_idm/configs/dit_lawam_frozen_idm_droid100.yaml")
+    parser.add_argument("--idm-checkpoint", default=None)
     parser.add_argument("--resume", default=None)
     args = parser.parse_args()
 
@@ -97,9 +122,14 @@ def main() -> None:
     requested_device = cfg["training"].get("device", "cuda")
     device = torch.device(requested_device if torch.cuda.is_available() or requested_device == "cpu" else "cpu")
 
-    train_set = LatentIDMDataset(cfg["data"]["latent_manifest"])
+    visual_stats_path = prepare_visual_stats(cfg)
+    train_set = LatentIDMDataset(cfg["data"]["latent_manifest"], visual_stats_path=visual_stats_path)
     val_manifest = Path(cfg["data"]["val_manifest"])
-    val_set = LatentIDMDataset(val_manifest) if val_manifest.exists() and val_manifest.stat().st_size else None
+    val_set = (
+        LatentIDMDataset(val_manifest, visual_stats_path=visual_stats_path)
+        if val_manifest.exists() and val_manifest.stat().st_size
+        else None
+    )
 
     train_loader = DataLoader(
         train_set,
@@ -119,8 +149,12 @@ def main() -> None:
     )
 
     model = build_model(cfg).to(device)
+    idm_checkpoint = Path(args.idm_checkpoint or cfg["training"]["idm_checkpoint"])
+    teacher_ckpt = load_idm_teacher(model, idm_checkpoint, device)
+
+    trainable_params = [param for param in model.parameters() if param.requires_grad]
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        trainable_params,
         lr=float(cfg["training"]["lr"]),
         weight_decay=float(cfg["training"]["weight_decay"]),
     )
@@ -128,6 +162,7 @@ def main() -> None:
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt["model"])
+        set_frozen_modules_eval(model)
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
         start_epoch = int(ckpt.get("epoch", -1)) + 1
@@ -138,6 +173,14 @@ def main() -> None:
     total_epochs = int(cfg["training"]["epochs"])
     train_start = time.perf_counter()
     epoch_durations: list[float] = []
+
+    frozen_param_count = sum(param.numel() for param in model.inverse_dynamics.parameters())
+    frozen_param_count += sum(param.numel() for param in model.state_predictor.parameters())
+    trainable_param_count = sum(param.numel() for param in trainable_params)
+    print(f"loaded frozen IDM teacher: {idm_checkpoint}")
+    print(f"teacher epoch: {teacher_ckpt.get('epoch', 'unknown')}")
+    print(f"frozen parameters: {frozen_param_count}")
+    print(f"trainable parameters: {trainable_param_count}")
 
     for epoch in range(start_epoch, total_epochs):
         epoch_start = time.perf_counter()
@@ -173,6 +216,8 @@ def main() -> None:
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "config": cfg,
+            "idm_checkpoint": str(idm_checkpoint),
+            "teacher_epoch": teacher_ckpt.get("epoch"),
             "train_metrics": train_metrics,
             "val_metrics": val_metrics,
         }

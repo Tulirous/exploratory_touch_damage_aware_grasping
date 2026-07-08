@@ -113,6 +113,7 @@ class DiffusionLatentWorldModel(nn.Module):
         num_diffusion_steps: int = 1000,
         beta_start: float = 1e-4,
         beta_end: float = 2e-2,
+        num_views: int = 0,
     ) -> None:
         super().__init__()
         self.visual_token_dim = visual_token_dim
@@ -124,11 +125,13 @@ class DiffusionLatentWorldModel(nn.Module):
             visual_token_dim=visual_token_dim,
             hidden_dim=hidden_dim,
             max_visual_tokens=max_visual_tokens,
+            num_views=num_views,
         )
         self.noisy_projector = VisualTokenProjector(
             visual_token_dim=visual_token_dim,
             hidden_dim=hidden_dim,
             max_visual_tokens=max_visual_tokens,
+            num_views=num_views,
         )
         self.current_type = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.noisy_type = nn.Parameter(torch.zeros(1, 1, hidden_dim))
@@ -200,4 +203,3 @@ class DiffusionLatentWorldModel(nn.Module):
     ) -> torch.Tensor:
         alpha_bar = self.alpha_bars[timesteps].view(-1, 1, 1).to(noisy_future.device)
         return (noisy_future - (1 - alpha_bar).sqrt() * predicted_noise) / alpha_bar.sqrt().clamp_min(1e-6)
-

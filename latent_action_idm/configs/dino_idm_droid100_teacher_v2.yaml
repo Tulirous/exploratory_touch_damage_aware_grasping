@@ -1,5 +1,5 @@
 project:
-  name: droid100_lawam_stage1_idm
+  name: droid100_lawam_stage1_idm_teacher_v2
   seed: 42
 
 data:
@@ -8,8 +8,6 @@ data:
   val_manifest: data/manifests/droid100_val.jsonl
   latent_dir: data/latents/dino_droid100
   fps: 15
-  # These fields document the latent extraction setting. Training reads the
-  # already extracted .npz windows from latent_manifest / val_manifest.
   future_offset_frames: 15
   stride_frames: 8
   max_windows_per_episode: null
@@ -23,8 +21,6 @@ dino:
   feature_mode: patch_tokens
   num_prefix_tokens: 1
   view_fusion: concat
-  # The actual local DINOv3 checkpoint may produce 400 tokens for two views.
-  # The model uses max_visual_tokens below, so this value is informational.
   num_visual_tokens: 400
   visual_token_dim: 768
   device: cuda
@@ -34,10 +30,12 @@ model:
   visual_token_dim: 768
   max_visual_tokens: 512
   state_dim: 7
-  latent_action_dim: 128
+  # Larger LA space for a stronger teacher. This does not bind the teacher to
+  # DROID raw actions; it only gives q(z | u_t, u_T, state_t) more capacity.
+  latent_action_dim: 256
   hidden_dim: 768
-  encoder_layers: 8
-  decoder_layers: 8
+  encoder_layers: 12
+  decoder_layers: 12
   num_heads: 12
   ffn_dim: 3072
   dropout: 0.1
@@ -45,11 +43,14 @@ model:
 training:
   device: cuda
   batch_size: 8
-  epochs: 100
-  lr: 0.0001
+  epochs: 200
+  lr: 0.00005
+  min_lr: 0.000005
+  lr_schedule: cosine
   weight_decay: 0.01
+  grad_clip_norm: 1.0
   loss_future_latent: 1.0
   loss_state: 0.1
-  loss_kl: 0.0001
-  loss_action_smooth: 0.0001
-  checkpoint_dir: checkpoints/latent_action_idm_droid100
+  loss_kl: 0.00005
+  loss_action_smooth: 0.00005
+  checkpoint_dir: checkpoints/latent_action_idm_droid100_teacher_v2

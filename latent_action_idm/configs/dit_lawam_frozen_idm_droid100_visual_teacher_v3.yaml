@@ -1,0 +1,46 @@
+project:
+  name: droid100_dit_lawam_frozen_visual_teacher_v3
+  seed: 42
+
+data:
+  latent_manifest: data/manifests/droid100_train.jsonl
+  val_manifest: data/manifests/droid100_val.jsonl
+  state_dim: 7
+  num_workers: 2
+
+model:
+  visual_token_dim: 768
+  max_visual_tokens: 512
+  state_dim: 7
+  latent_action_dim: 128
+  hidden_dim: 768
+  encoder_layers: 8
+  decoder_layers: 10
+  num_heads: 12
+  ffn_dim: 3072
+  dropout: 0.2
+  # Match visual-teacher v3: q(z | u_t, u_T), without robot_state.
+  use_state_in_idm: false
+  # v3 teacher was trained without per-view embeddings. Keep this at 0 so the
+  # frozen inverse_dynamics architecture exactly matches the teacher checkpoint.
+  num_views: 0
+
+diffusion:
+  num_steps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+
+training:
+  device: cuda
+  batch_size: 4
+  epochs: 100
+  lr: 0.0001
+  weight_decay: 0.01
+  idm_checkpoint: checkpoints/latent_action_idm_droid100_visual_teacher_v3/best.pt
+  # Frozen-IDM training optimizes only the DiT denoiser. State metrics are
+  # diagnostic only because the teacher z no longer uses robot_state.
+  loss_noise: 1.0
+  loss_state: 0.0
+  loss_kl: 0.0
+  loss_action_smooth: 0.0
+  checkpoint_dir: checkpoints/dit_lawam_frozen_idm_droid100_visual_teacher_v3

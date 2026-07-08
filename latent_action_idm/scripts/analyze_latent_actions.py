@@ -46,6 +46,13 @@ def load_checkpoint(path: Path, device: torch.device) -> tuple[dict[str, Any], t
     return cfg, model
 
 
+def visual_stats_path_from_config(cfg: dict) -> str | None:
+    normalizer_cfg = cfg.get("data", {}).get("visual_normalization", {})
+    if not normalizer_cfg or not bool(normalizer_cfg.get("enabled", False)):
+        return None
+    return normalizer_cfg.get("stats_path")
+
+
 
 
 @torch.no_grad()
@@ -56,6 +63,14 @@ def collect_outputs(
     device: torch.device,
 ) -> dict[str, Any]:
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    visual_stats = getattr(dataset, "visual_stats", None)
+    stats_tensors = None
+    if visual_stats is not None:
+        mean, std = visual_stats
+        stats_tensors = (
+            torch.from_numpy(mean).to(device=device, dtype=torch.float32),
+            torch.from_numpy(std).to(device=device, dtype=torch.float32),
+        )
     rows = []
     arrays: dict[str, list[np.ndarray]] = {
         "latent_mu": [],
@@ -77,9 +92,18 @@ def collect_outputs(
         count = int(batch["visual_t"].shape[0])
         total_count += count
 
-        future_mse = F.mse_loss(outputs["predicted_visual_future"], batch["visual_future"], reduction="sum")
+        pred_visual_future = outputs["predicted_visual_future"]
+        visual_future = batch["visual_future"]
+        visual_t = batch["visual_t"]
+        if stats_tensors is not None:
+            mean, std = stats_tensors
+            pred_visual_future = pred_visual_future * std + mean
+            visual_future = visual_future * std + mean
+            visual_t = visual_t * std + mean
+
+        future_mse = F.mse_loss(pred_visual_future, visual_future, reduction="sum")
         state_mse = F.mse_loss(outputs["predicted_state_future"], batch["state_future"], reduction="sum")
-        identity_future_mse = F.mse_loss(batch["visual_t"], batch["visual_future"], reduction="sum")
+        identity_future_mse = F.mse_loss(visual_t, visual_future, reduction="sum")
         identity_state_mse = F.mse_loss(batch["state_t"], batch["state_future"], reduction="sum")
         total_future_mse += float(future_mse.cpu())
         total_state_mse += float(state_mse.cpu())
@@ -171,7 +195,7 @@ def main() -> None:
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
     cfg, model = load_checkpoint(Path(args.checkpoint), device)
     manifest = args.manifest or cfg["data"]["val_manifest"]
-    dataset = LatentIDMDataset(manifest)
+    dataset = LatentIDMDataset(manifest, visual_stats_path=visual_stats_path_from_config(cfg))
     result = collect_outputs(model, dataset, args.batch_size, device)
     arrays = result["arrays"]
     metrics = result["metrics"]

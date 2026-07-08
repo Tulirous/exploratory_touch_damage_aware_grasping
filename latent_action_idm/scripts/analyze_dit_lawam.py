@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from latent_action_idm.datasets import LatentIDMDataset
 from latent_action_idm.models import metric_future_scores
 from latent_action_idm.train_dit_lawam import build_model
-from latent_action_idm.train_idm import move_batch
+from latent_action_idm.train_idm import move_batch, prepare_visual_stats
 
 
 def load_checkpoint(path: Path, device: torch.device) -> tuple[dict[str, Any], torch.nn.Module]:
@@ -171,7 +171,8 @@ def main() -> None:
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
     cfg, model = load_checkpoint(Path(args.checkpoint), device)
     manifest = args.manifest or cfg["data"]["val_manifest"]
-    dataset = LatentIDMDataset(manifest)
+    visual_stats_path = prepare_visual_stats(cfg)
+    dataset = LatentIDMDataset(manifest, visual_stats_path=visual_stats_path)
     result = collect_outputs(model, dataset, args.batch_size, device, args.timestep, args.seed)
 
     output_dir = Path(args.output_dir)
@@ -189,4 +190,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

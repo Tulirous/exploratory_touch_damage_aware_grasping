@@ -1,0 +1,41 @@
+project:
+  name: droid100_dit_lawam_frozen_idm
+  seed: 42
+
+data:
+  latent_manifest: data/manifests/droid100_train.jsonl
+  val_manifest: data/manifests/droid100_val.jsonl
+  state_dim: 7
+  num_workers: 2
+
+model:
+  visual_token_dim: 768
+  max_visual_tokens: 512
+  state_dim: 7
+  latent_action_dim: 128
+  hidden_dim: 768
+  encoder_layers: 8
+  decoder_layers: 8
+  num_heads: 12
+  ffn_dim: 3072
+  dropout: 0.1
+
+diffusion:
+  num_steps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+
+training:
+  device: cuda
+  batch_size: 4
+  epochs: 100
+  lr: 0.0001
+  weight_decay: 0.01
+  idm_checkpoint: checkpoints/latent_action_idm_droid100/best.pt
+  # Frozen-IDM training should optimize the DiT denoiser only. State metrics
+  # are still logged through the frozen teacher head for diagnostics.
+  loss_noise: 1.0
+  loss_state: 0.0
+  loss_kl: 0.0
+  loss_action_smooth: 0.0
+  checkpoint_dir: checkpoints/dit_lawam_frozen_idm_droid100

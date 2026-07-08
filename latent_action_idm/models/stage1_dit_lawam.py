@@ -26,6 +26,8 @@ class Stage1DiTLaWAM(nn.Module):
         num_diffusion_steps: int = 1000,
         beta_start: float = 1e-4,
         beta_end: float = 2e-2,
+        use_state_in_idm: bool = True,
+        num_views: int = 0,
     ) -> None:
         super().__init__()
         self.inverse_dynamics = InverseDynamicsTransformer(
@@ -38,6 +40,8 @@ class Stage1DiTLaWAM(nn.Module):
             ffn_dim=ffn_dim,
             dropout=dropout,
             max_visual_tokens=max_visual_tokens,
+            use_state_condition=use_state_in_idm,
+            num_views=num_views,
         )
         self.latent_world_model = DiffusionLatentWorldModel(
             visual_token_dim=visual_token_dim,
@@ -51,6 +55,7 @@ class Stage1DiTLaWAM(nn.Module):
             num_diffusion_steps=num_diffusion_steps,
             beta_start=beta_start,
             beta_end=beta_end,
+            num_views=num_views,
         )
         self.state_predictor = MLP(
             state_dim + latent_action_dim,
@@ -100,4 +105,3 @@ class Stage1DiTLaWAM(nn.Module):
     def predict_state_future(self, state_t: torch.Tensor, latent_action: torch.Tensor) -> torch.Tensor:
         state_delta = self.state_predictor(torch.cat([state_t, latent_action], dim=-1))
         return state_t + state_delta
-
