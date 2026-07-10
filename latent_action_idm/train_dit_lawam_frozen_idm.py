@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from latent_action_idm.checkpoint_utils import remap_legacy_stage1_state_dict
 from latent_action_idm.datasets import LatentIDMDataset
 from latent_action_idm.models import Stage1DiTLaWAM
-from latent_action_idm.train_dit_lawam import build_model
+from latent_action_idm.train_dit_lawam import build_model, diffusion_loss_weights
 from latent_action_idm.train_idm import format_duration, move_batch, prepare_visual_stats
 from latent_action_idm.utils import load_config, seed_everything
 
@@ -54,6 +54,10 @@ def load_idm_teacher(model: Stage1DiTLaWAM, checkpoint_path: Path, device: torch
 
 
 def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tuple[torch.Tensor, dict]:
+    per_sample_denoise = F.mse_loss(outputs["model_prediction"], outputs["diffusion_target"], reduction="none")
+    per_sample_denoise = per_sample_denoise.flatten(1).mean(dim=1)
+    weights_per_sample = diffusion_loss_weights(outputs, cfg)
+    loss_denoise = (per_sample_denoise * weights_per_sample).mean()
     loss_noise = F.mse_loss(outputs["predicted_noise"], outputs["noise"])
     loss_state = F.mse_loss(outputs["predicted_state_future"], batch["state_future"])
     loss_kl = -0.5 * torch.mean(
@@ -63,17 +67,19 @@ def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tu
 
     weights = cfg["training"]
     total = (
-        float(weights.get("loss_noise", 1.0)) * loss_noise
+        float(weights.get("loss_noise", 1.0)) * loss_denoise
         + float(weights.get("loss_state", 0.0)) * loss_state
         + float(weights.get("loss_kl", 0.0)) * loss_kl
         + float(weights.get("loss_action_smooth", 0.0)) * loss_action_smooth
     )
     metrics = {
         "loss": float(total.detach().cpu()),
-        "noise": float(loss_noise.detach().cpu()),
+        "noise": float(loss_denoise.detach().cpu()),
+        "epsilon": float(loss_noise.detach().cpu()),
         "state": float(loss_state.detach().cpu()),
         "kl": float(loss_kl.detach().cpu()),
         "action_l2": float(loss_action_smooth.detach().cpu()),
+        "loss_weight": float(weights_per_sample.mean().detach().cpu()),
     }
     return total, metrics
 

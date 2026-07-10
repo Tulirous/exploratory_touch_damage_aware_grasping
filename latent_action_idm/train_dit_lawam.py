@@ -32,10 +32,41 @@ def build_model(cfg: dict) -> Stage1DiTLaWAM:
         beta_end=float(diffusion.get("beta_end", 2e-2)),
         use_state_in_idm=bool(cfg["model"].get("use_state_in_idm", True)),
         num_views=int(cfg["model"].get("num_views", 0)),
+        prediction_type=diffusion.get("prediction_type", "epsilon"),
+        timestep_sampling=diffusion.get("timestep_sampling", "uniform"),
+        train_timestep_min=int(diffusion.get("train_timestep_min", 0)),
+        train_timestep_max=diffusion.get("train_timestep_max"),
+        logit_normal_mean=float(diffusion.get("logit_normal_mean", 0.0)),
+        logit_normal_std=float(diffusion.get("logit_normal_std", 1.0)),
     )
 
 
+def diffusion_loss_weights(outputs: dict[str, torch.Tensor], cfg: dict) -> torch.Tensor:
+    gamma = cfg.get("diffusion", {}).get("min_snr_gamma")
+    batch_size = int(outputs["diffusion_timesteps"].shape[0])
+    if gamma is None:
+        return torch.ones(batch_size, device=outputs["diffusion_timesteps"].device)
+    gamma = float(gamma)
+    alpha_bar = outputs["alpha_bars"][outputs["diffusion_timesteps"]]
+    snr = alpha_bar / (1 - alpha_bar).clamp_min(1e-8)
+    clipped = torch.minimum(snr, torch.full_like(snr, gamma))
+    prediction_type = cfg.get("diffusion", {}).get("prediction_type", "epsilon")
+    if prediction_type == "epsilon":
+        weights = clipped / snr.clamp_min(1e-8)
+    elif prediction_type == "x0":
+        weights = clipped
+    elif prediction_type == "v":
+        weights = clipped / (snr + 1.0)
+    else:
+        raise ValueError(f"Unsupported prediction_type={prediction_type}")
+    return weights
+
+
 def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tuple[torch.Tensor, dict]:
+    per_sample_denoise = F.mse_loss(outputs["model_prediction"], outputs["diffusion_target"], reduction="none")
+    per_sample_denoise = per_sample_denoise.flatten(1).mean(dim=1)
+    weights_per_sample = diffusion_loss_weights(outputs, cfg)
+    loss_denoise = (per_sample_denoise * weights_per_sample).mean()
     loss_noise = F.mse_loss(outputs["predicted_noise"], outputs["noise"])
     loss_state = F.mse_loss(outputs["predicted_state_future"], batch["state_future"])
     loss_kl = -0.5 * torch.mean(
@@ -45,17 +76,19 @@ def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tu
 
     weights = cfg["training"]
     total = (
-        float(weights.get("loss_noise", 1.0)) * loss_noise
+        float(weights.get("loss_noise", 1.0)) * loss_denoise
         + float(weights.get("loss_state", 0.1)) * loss_state
         + float(weights.get("loss_kl", 0.0001)) * loss_kl
         + float(weights.get("loss_action_smooth", 0.0001)) * loss_action_smooth
     )
     metrics = {
         "loss": float(total.detach().cpu()),
-        "noise": float(loss_noise.detach().cpu()),
+        "noise": float(loss_denoise.detach().cpu()),
+        "epsilon": float(loss_noise.detach().cpu()),
         "state": float(loss_state.detach().cpu()),
         "kl": float(loss_kl.detach().cpu()),
         "action_l2": float(loss_action_smooth.detach().cpu()),
+        "loss_weight": float(weights_per_sample.mean().detach().cpu()),
     }
     return total, metrics
 

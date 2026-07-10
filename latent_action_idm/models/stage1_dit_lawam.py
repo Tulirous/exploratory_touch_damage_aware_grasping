@@ -28,6 +28,12 @@ class Stage1DiTLaWAM(nn.Module):
         beta_end: float = 2e-2,
         use_state_in_idm: bool = True,
         num_views: int = 0,
+        prediction_type: str = "epsilon",
+        timestep_sampling: str = "uniform",
+        train_timestep_min: int = 0,
+        train_timestep_max: int | None = None,
+        logit_normal_mean: float = 0.0,
+        logit_normal_std: float = 1.0,
     ) -> None:
         super().__init__()
         self.inverse_dynamics = InverseDynamicsTransformer(
@@ -56,6 +62,12 @@ class Stage1DiTLaWAM(nn.Module):
             beta_start=beta_start,
             beta_end=beta_end,
             num_views=num_views,
+            prediction_type=prediction_type,
+            timestep_sampling=timestep_sampling,
+            train_timestep_min=train_timestep_min,
+            train_timestep_max=train_timestep_max,
+            logit_normal_mean=logit_normal_mean,
+            logit_normal_std=logit_normal_std,
         )
         self.state_predictor = MLP(
             state_dim + latent_action_dim,
@@ -80,23 +92,36 @@ class Stage1DiTLaWAM(nn.Module):
                 visual_t.device,
             )
         noisy_future, noise = self.latent_world_model.q_sample(visual_future, diffusion_timesteps, noise=noise)
-        predicted_noise = self.latent_world_model(
+        model_prediction = self.latent_world_model(
             noisy_future=noisy_future,
             visual_t=visual_t,
             latent_action=latent_action,
             diffusion_timesteps=diffusion_timesteps,
         )
-        predicted_visual_future = self.latent_world_model.predict_clean_from_noise(
+        diffusion_target = self.latent_world_model.training_target(
+            visual_future,
+            noise,
+            diffusion_timesteps,
+        )
+        predicted_noise = self.latent_world_model.predict_noise_from_model_output(
             noisy_future,
             diffusion_timesteps,
-            predicted_noise,
+            model_prediction,
+        )
+        predicted_visual_future = self.latent_world_model.predict_clean_from_model_output(
+            noisy_future,
+            diffusion_timesteps,
+            model_prediction,
         )
         predicted_state_future = self.predict_state_future(state_t, latent_action)
         return {
             **posterior,
             "diffusion_timesteps": diffusion_timesteps,
+            "alpha_bars": self.latent_world_model.alpha_bars,
             "noise": noise,
             "noisy_visual_future": noisy_future,
+            "model_prediction": model_prediction,
+            "diffusion_target": diffusion_target,
             "predicted_noise": predicted_noise,
             "predicted_visual_future": predicted_visual_future,
             "predicted_state_future": predicted_state_future,

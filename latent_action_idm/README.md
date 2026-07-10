@@ -3,10 +3,12 @@
 这个子项目用于复现 LaWAM Stage 1 的核心思想，并作为后续加入触觉/力觉模块的起点。当前目标不是直接训练 VLA，也不是生成未来 RGB 视频，而是学习：
 
 ```text
-D435/D415 当前视觉 latent + D435/D415 未来视觉 latent + 当前 UR5 state
+D435/D415 当前视觉 latent + D435/D415 未来视觉 latent
   -> latent_action
-  -> 未来 UR5 state / 未来视觉 latent
+  -> 未来视觉 latent
 ```
+
+`robot_state` 在当前 visual-only teacher 中不进入 IDM，也不参与 teacher 训练目标。它只保留为诊断字段，避免 droid_100 的机器人状态空间污染后续要迁移到 UR5 的 latent action。
 
 ## 与 LaWAM 的对齐点
 
@@ -53,7 +55,7 @@ latent_action_idm/models/common.py
 
 latent_action_idm/models/inverse_dynamics.py
   InverseDynamicsTransformer
-  输入: visual_t, visual_future, state_t
+  输入: visual_t, visual_future
   输出: latent_mu, latent_logvar, latent_action
 
 latent_action_idm/models/latent_world_model.py
@@ -66,16 +68,25 @@ latent_action_idm/models/stage1_lawam.py
   组合: IDM + LaWM decoder + auxiliary state predictor
 ```
 
-为了适配双相机，当前默认把两个视角的 patch tokens 沿 token 维拼接：
+为了适配双相机，当前默认把两个视角的 tokens 沿 token 维拼接：
 
 ```text
-base image:  14 x 14 = 196 tokens
-wrist image: 14 x 14 = 196 tokens
-two views:   392 tokens
+base image:  200 tokens
+wrist image: 200 tokens
+two views:   400 tokens
 token dim:   768
 ```
 
-训练配置默认使用 8 层 Transformer encoder/decoder，方便先在 60 条数据上调通。正式复现 LaWAM 规模时，把配置中的层数调高：
+其中单视角 `200 tokens` 来自当前本地 DINOv3 ViT-B/16 checkpoint 的实际输出，通常可理解为 `196 patch tokens + 4 extra/register tokens`。因此后续代码不能硬编码 `392` 或 `196`。
+
+v4 teacher 还加入了 camera-aware view embedding：
+
+```text
+前 200 tokens: base/global view embedding
+后 200 tokens: wrist view embedding
+```
+
+训练配置默认使用 8 层 Transformer encoder 和 10 层 decoder，方便先在 droid_100 上稳定验证。正式复现 LaWAM 规模时，可以再把配置中的层数调高：
 
 ```yaml
 model:
@@ -174,28 +185,36 @@ python -m latent_action_idm.train_idm \
 训练样本包含：
 
 ```text
-visual_t: [392, 768]
-visual_future: [392, 768]
-state_t: [7]
-state_future: [7]
+visual_t: [400, 768]
+visual_future: [400, 768]
+state_t: [7]         # diagnostic only for visual-only teacher
+state_future: [7]    # diagnostic only for visual-only teacher
 ```
 
 模型输出：
 
 ```text
 latent_action: [128]
-predicted_state_future: [7]
-predicted_visual_future: [392, 768]
+predicted_state_future: [7]      # diagnostic only when loss_state=0
+predicted_visual_future: [400, 768]
 ```
 
-其中 `latent_action` 是后续接入 LaWM decoder、FutureContactDiT、触觉/力觉 adapter 的中间动作表示。
+其中 `latent_action` 是后续接入 LaWM decoder、FutureContactDiT、触觉/力觉 adapter 的中间动作表示。当前最好的 teacher 是 visual-only v4：
+
+```text
+checkpoint:
+  checkpoints/latent_action_idm_droid100_visual_teacher_v4/best.pt
+
+config:
+  latent_action_idm/configs/dino_idm_droid100_visual_teacher_v4.yaml
+```
 
 单模块 smoke test：
 
 ```bash
 python -m latent_action_idm.scripts.smoke_test_stage1_modules \
   --batch-size 2 \
-  --num-tokens 392 \
+  --num-tokens 400 \
   --token-dim 768 \
   --state-dim 7 \
   --latent-dim 128 \
@@ -209,8 +228,88 @@ python -m latent_action_idm.scripts.smoke_test_stage1_modules \
 
 ```text
 IDM latent_mu: (2, 128)
-LaWM predicted future: (2, 392, 768)
+LaWM predicted future: (2, 400, 768)
 Stage1 predicted_state_future: (2, 7)
+```
+
+## DROID100 v4 Teacher Benchmark
+
+当前 droid_100 实验使用：
+
+```text
+dataset: lerobot/droid_100
+episodes: 100
+frames: 32212
+fps: 15
+future horizon: 15 frames = 1 second
+train windows: 3107
+val windows: 777
+visual tokens: [400, 768]
+```
+
+v4 teacher 结构：
+
+```text
+Frozen DINOv3 ViT-B/16
+  -> normalized two-view visual tokens
+  -> camera-aware VisualTokenProjector
+  -> visual-only IDM q(z | u_t, u_T)
+  -> z_teacher [128]
+  -> residual LaWM decoder: u_T_hat = u_t + delta_u_hat
+```
+
+Benchmark 命令：
+
+```bash
+python -m latent_action_idm.scripts.benchmark_idm_teacher \
+  --checkpoint checkpoints/latent_action_idm_droid100_visual_teacher_v4/best.pt \
+  --train-manifest data/manifests/droid100_train.jsonl \
+  --val-manifest data/manifests/droid100_val.jsonl \
+  --output outputs/idm_teacher_benchmark/droid100_visual_teacher_v4.txt \
+  --batch-size 8 \
+  --device cuda
+```
+
+结果：
+
+```text
+identity:
+  future_mse_per_token: 0.04973803
+  future_improvement_vs_identity: 0.00000000
+  transition_delta_cosine: 0.00000000
+  retrieval_top1: 0.02316602
+  retrieval_top5: 0.45817246
+  retrieval_top10: 0.63577864
+  retrieval_median_rank: 6
+
+mean_delta:
+  future_mse_per_token: 0.04971497
+  future_improvement_vs_identity: 0.00046351
+  transition_delta_cosine: 0.02211529
+  retrieval_top1: 0.02445302
+
+nearest_neighbor:
+  future_mse_per_token: 0.11024701
+  future_improvement_vs_identity: -1.21655370
+  transition_delta_cosine: 0.32939101
+  retrieval_top1: 0.03603604
+
+teacher v4:
+  future_mse_per_token: 0.03619018
+  future_improvement_vs_identity: 0.27238409
+  delta_r2: 0.27238021
+  transition_delta_cosine: 0.50969794
+  retrieval_top1: 0.50579151
+  retrieval_top5: 0.92792793
+  retrieval_top10: 0.95752896
+  retrieval_median_rank: 1
+```
+
+结论：
+
+```text
+v4 teacher 明显优于 identity / mean-delta / nearest-neighbor baseline。
+它可以作为后续 frozen-IDM DiT-LaWM 的 z_teacher 来源。
 ```
 
 ## 后续创新修改路线
@@ -243,7 +342,7 @@ tactile / force / gripper feedback
 ```bash
 python -m latent_action_idm.scripts.smoke_test_dit_lawam \
   --batch-size 2 \
-  --num-tokens 392 \
+  --num-tokens 400 \
   --token-dim 768 \
   --state-dim 7 \
   --latent-dim 128 \
@@ -263,16 +362,16 @@ python -m latent_action_idm.train_dit_lawam \
 DiT-LaWM 输入输出：
 
 ```text
-clean future tokens u_T:       [B, 392, 768]
-random noise epsilon:          [B, 392, 768]
+clean future tokens u_T:       [B, 400, 768]
+random noise epsilon:          [B, 400, 768]
 diffusion timestep tau:        [B]
-noisy future tokens x_tau:     [B, 392, 768]
-current visual tokens u_t:     [B, 392, 768]
+noisy future tokens x_tau:     [B, 400, 768]
+current visual tokens u_t:     [B, 400, 768]
 latent action z from IDM:      [B, 128]
 
 DiffusionLatentWorldModel:
   x_tau + u_t + z + tau
-    -> predicted noise epsilon_hat [B, 392, 768]
+    -> predicted noise epsilon_hat [B, 400, 768]
 ```
 
 训练目标：
@@ -284,13 +383,13 @@ L_dit = MSE(epsilon_hat, epsilon)
 完整 Stage1DiTLaWAM：
 
 ```text
-u_t + u_T + state_t
-  -> InverseDynamicsTransformer
-  -> z
+u_t + u_T
+  -> frozen visual-only IDM v4
+  -> z_teacher
 
 u_T + noise -> x_tau
 
-x_tau + u_t + z + tau
+x_tau + u_t + z_teacher + tau
   -> DiffusionLatentWorldModel
   -> predicted noise
   -> predicted future tokens
@@ -325,8 +424,8 @@ FutureTokenEvaluator 输入输出：
 
 ```text
 输入:
-  visual_t:                  [B, 392, 768]
-  predicted_visual_future:   [B, 392, 768]
+  visual_t:                  [B, 400, 768]
+  predicted_visual_future:   [B, 400, 768]
   state_t optional:          [B, 7]
   latent_action optional:    [B, 128]
 
@@ -342,7 +441,7 @@ smoke test：
 ```bash
 python -m latent_action_idm.scripts.smoke_test_future_evaluator \
   --batch-size 2 \
-  --num-tokens 392 \
+  --num-tokens 400 \
   --token-dim 768 \
   --state-dim 7 \
   --latent-dim 128 \

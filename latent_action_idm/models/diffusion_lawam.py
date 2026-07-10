@@ -114,12 +114,28 @@ class DiffusionLatentWorldModel(nn.Module):
         beta_start: float = 1e-4,
         beta_end: float = 2e-2,
         num_views: int = 0,
+        prediction_type: str = "epsilon",
+        timestep_sampling: str = "uniform",
+        train_timestep_min: int = 0,
+        train_timestep_max: int | None = None,
+        logit_normal_mean: float = 0.0,
+        logit_normal_std: float = 1.0,
     ) -> None:
         super().__init__()
+        if prediction_type not in {"epsilon", "x0", "v"}:
+            raise ValueError(f"Unsupported prediction_type={prediction_type}")
+        if timestep_sampling not in {"uniform", "logit_normal"}:
+            raise ValueError(f"Unsupported timestep_sampling={timestep_sampling}")
         self.visual_token_dim = visual_token_dim
         self.latent_action_dim = latent_action_dim
         self.hidden_dim = hidden_dim
         self.num_diffusion_steps = num_diffusion_steps
+        self.prediction_type = prediction_type
+        self.timestep_sampling = timestep_sampling
+        self.train_timestep_min = int(train_timestep_min)
+        self.train_timestep_max = int(train_timestep_max) if train_timestep_max is not None else num_diffusion_steps - 1
+        self.logit_normal_mean = float(logit_normal_mean)
+        self.logit_normal_std = float(logit_normal_std)
 
         self.current_projector = VisualTokenProjector(
             visual_token_dim=visual_token_dim,
@@ -180,7 +196,16 @@ class DiffusionLatentWorldModel(nn.Module):
         return self.output_proj(self.norm(noisy_tokens))
 
     def sample_timesteps(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        return torch.randint(0, self.num_diffusion_steps, (batch_size,), device=device)
+        low = max(self.train_timestep_min, 0)
+        high = min(self.train_timestep_max, self.num_diffusion_steps - 1)
+        if high < low:
+            raise ValueError(f"Invalid timestep range: [{low}, {high}]")
+        if self.timestep_sampling == "uniform":
+            return torch.randint(low, high + 1, (batch_size,), device=device)
+        samples = torch.randn(batch_size, device=device) * self.logit_normal_std + self.logit_normal_mean
+        scaled = torch.sigmoid(samples)
+        timesteps = low + torch.floor(scaled * (high - low + 1)).long()
+        return timesteps.clamp(min=low, max=high)
 
     def q_sample(
         self,
@@ -203,3 +228,95 @@ class DiffusionLatentWorldModel(nn.Module):
     ) -> torch.Tensor:
         alpha_bar = self.alpha_bars[timesteps].view(-1, 1, 1).to(noisy_future.device)
         return (noisy_future - (1 - alpha_bar).sqrt() * predicted_noise) / alpha_bar.sqrt().clamp_min(1e-6)
+
+    def training_target(
+        self,
+        clean_future: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.prediction_type == "epsilon":
+            return noise
+        if self.prediction_type == "x0":
+            return clean_future
+        alpha_bar = self.alpha_bars[timesteps].view(-1, 1, 1).to(clean_future.device)
+        return alpha_bar.sqrt() * noise - (1 - alpha_bar).sqrt() * clean_future
+
+    def predict_clean_from_model_output(
+        self,
+        noisy_future: torch.Tensor,
+        timesteps: torch.Tensor,
+        model_output: torch.Tensor,
+    ) -> torch.Tensor:
+        alpha_bar = self.alpha_bars[timesteps].view(-1, 1, 1).to(noisy_future.device)
+        if self.prediction_type == "epsilon":
+            return self.predict_clean_from_noise(noisy_future, timesteps, model_output)
+        if self.prediction_type == "x0":
+            return model_output
+        return alpha_bar.sqrt() * noisy_future - (1 - alpha_bar).sqrt() * model_output
+
+    def predict_noise_from_model_output(
+        self,
+        noisy_future: torch.Tensor,
+        timesteps: torch.Tensor,
+        model_output: torch.Tensor,
+    ) -> torch.Tensor:
+        alpha_bar = self.alpha_bars[timesteps].view(-1, 1, 1).to(noisy_future.device)
+        if self.prediction_type == "epsilon":
+            return model_output
+        if self.prediction_type == "x0":
+            return (noisy_future - alpha_bar.sqrt() * model_output) / (1 - alpha_bar).sqrt().clamp_min(1e-6)
+        return (1 - alpha_bar).sqrt() * noisy_future + alpha_bar.sqrt() * model_output
+
+    @torch.no_grad()
+    def sample(
+        self,
+        visual_t: torch.Tensor,
+        latent_action: torch.Tensor,
+        shape: tuple[int, int, int],
+        num_steps: int = 50,
+        sampler: str = "ddim",
+        eta: float = 0.0,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
+        if sampler not in {"ddim", "ddpm"}:
+            raise ValueError(f"Unsupported sampler={sampler}")
+        device = visual_t.device
+        x = torch.randn(shape, device=device, generator=generator)
+        step_ids = torch.linspace(self.num_diffusion_steps - 1, 0, num_steps, device=device).long().unique_consecutive()
+        if step_ids[-1].item() != 0:
+            step_ids = torch.cat([step_ids, torch.zeros(1, dtype=torch.long, device=device)])
+
+        for index, timestep in enumerate(step_ids):
+            t = torch.full((shape[0],), int(timestep.item()), dtype=torch.long, device=device)
+            model_output = self(
+                noisy_future=x,
+                visual_t=visual_t,
+                latent_action=latent_action,
+                diffusion_timesteps=t,
+            )
+            x0 = self.predict_clean_from_model_output(x, t, model_output)
+            eps = self.predict_noise_from_model_output(x, t, model_output)
+            if timestep.item() == 0:
+                x = x0
+                continue
+
+            prev_timestep = step_ids[index + 1] if index + 1 < len(step_ids) else torch.tensor(0, device=device)
+            alpha_t = self.alpha_bars[timestep].to(device)
+            alpha_prev = self.alpha_bars[prev_timestep].to(device)
+            if sampler == "ddim":
+                sigma = eta * torch.sqrt((1 - alpha_prev) / (1 - alpha_t)) * torch.sqrt(1 - alpha_t / alpha_prev)
+                direction_scale = torch.sqrt((1 - alpha_prev - sigma.square()).clamp_min(0.0))
+                x = alpha_prev.sqrt() * x0 + direction_scale * eps
+                if eta > 0:
+                    x = x + sigma * torch.randn(shape, device=device, generator=generator)
+                continue
+
+            beta_t = self.betas[timestep].to(device)
+            alpha_step = 1.0 - beta_t
+            posterior_var = beta_t * (1 - alpha_prev) / (1 - alpha_t)
+            coef1 = beta_t * alpha_prev.sqrt() / (1 - alpha_t)
+            coef2 = (1 - alpha_prev) * alpha_step.sqrt() / (1 - alpha_t)
+            x = coef1 * x0 + coef2 * x
+            x = x + posterior_var.sqrt() * torch.randn(shape, device=device, generator=generator)
+        return x

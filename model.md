@@ -69,6 +69,141 @@ outcomes
   -> selected UR5 + Robotiq action
 ```
 
+## 当前进度快照
+
+截至 2026-07-09，当前工程重点在 LaWAM-style Stage 1 latent action teacher 和后续 DiT-LaWM 训练准备。
+
+已完成：
+
+```text
+1. DINOv3 latent extraction
+   dataset: lerobot/droid_100
+   cameras: exterior_image_1_left as base/global + wrist_image_left as wrist
+   visual_t / visual_future: [400, 768]
+   horizon: 15 frames = 1 second
+   train windows: 3107
+   val windows: 777
+
+2. visual-only IDM teacher v4
+   q(z | u_t, u_T), no robot_state input
+   z_teacher: [128]
+   residual decoder: u_T_hat = u_t + delta_u_hat
+   camera-aware view embedding
+   train-set DINO latent normalization
+
+3. IDM teacher benchmark
+   v4 teacher clearly beats identity / mean-delta / nearest-neighbor baselines.
+```
+
+当前最好的 teacher checkpoint：
+
+```text
+checkpoints/latent_action_idm_droid100_visual_teacher_v4/best.pt
+```
+
+v4 teacher benchmark：
+
+```text
+future_mse_per_token: 0.03619018
+identity_future_mse_per_token: 0.04973803
+future_improvement_vs_identity: 0.27238409
+delta_r2: 0.27238021
+transition_delta_cosine: 0.50969794
+retrieval_top1: 0.50579151
+retrieval_top5: 0.92792793
+retrieval_top10: 0.95752896
+retrieval_median_rank: 1
+```
+
+当前结论：
+
+```text
+v4 teacher 已达到 droid_100 sanity benchmark 的可用水平。
+下一步应冻结 v4 IDM teacher，训练 DiT-LaWM denoiser。
+```
+
+下一步：
+
+```text
+u_t + u_T
+  -> frozen visual-only IDM v4
+  -> z_teacher
+
+z_teacher + u_t + noisy u_T + diffusion timestep
+  -> DiT-LaWM
+  -> predicted noise / predicted future visual tokens
+```
+
+修正后的最终执行链路：
+
+```text
+Text instruction + current visual tokens u_t
+  -> VLM Latent Action Prior
+  -> z_student / language-conditioned action latent
+  -> optional task/action context token
+
+z_student + u_t
+  -> DiT-LaWM
+  -> predicted future visual tokens u_T_hat
+
+u_T_hat + u_t + VLM task/action context
+  -> Action Expert
+  -> executable UR5 + Robotiq action chunk
+```
+
+这里的关键约束：
+
+```text
+Action Expert 不应只使用 z_student + u_t + robot_state。
+它必须显式接收 DiT-LaWM 输出的 predicted future visual tokens，
+否则 WAM 预测的未来 latent 没有进入真实动作生成链路。
+```
+
+VLM 模块需要通过 `z_teacher` 蒸馏学习 latent action：
+
+```text
+teacher:
+  u_t + u_T -> IDM v4 -> z_teacher
+
+student:
+  text instruction + u_t -> VLM -> z_student
+
+distillation:
+  z_student ≈ z_teacher
+```
+
+同时，VLM 可输出一部分任务/动作上下文给 Action Expert：
+
+```text
+task/action context:
+  target object
+  task phase
+  manipulation intent
+  selected latent action token
+```
+
+但文本不直接改变易损物体的损伤安全阈值；安全约束仍由 tactile-force / future latent / outcome 模块处理。
+
+仍未完成：
+
+```text
+1. VLM Latent Action Prior
+   text instruction + current visual tokens -> z_student
+   通过 distillation 对齐 z_teacher
+
+2. Action Expert
+   DiT-LaWM predicted future tokens + current visual tokens + selected VLM latent/task output
+     -> executable UR5 action chunk
+   该模块必须用 UR5 自采数据训练，不能直接用 droid_100 raw action 部署到 UR5。
+
+3. Tactile-force branch
+   pressure / force / gripper -> contact latent
+   后续加入 damage / slip / deformation outcome prediction
+
+4. 真机闭环 runtime
+   D435 + D415 + UR5 state -> z -> future latent evaluation -> action chunk -> ur_rtde / Robotiq
+```
+
 ## 1. Text Task Module
 
 目标：
