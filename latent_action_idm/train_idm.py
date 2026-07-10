@@ -36,6 +36,8 @@ def build_model(cfg: dict) -> LatentActionIDM:
         use_state_in_idm=bool(cfg["model"].get("use_state_in_idm", True)),
         num_views=int(cfg["model"].get("num_views", 0)),
         residual_future_prediction=bool(cfg["model"].get("residual_future_prediction", False)),
+        cross_view_fusion_layers=int(cfg["model"].get("cross_view_fusion_layers", 0)),
+        use_residual_idm_branch=bool(cfg["model"].get("use_residual_idm_branch", False)),
     )
 
 
@@ -69,6 +71,42 @@ def format_duration(seconds: float) -> str:
     return f"{seconds:d}s"
 
 
+def overfit_warning(
+    epoch: int,
+    train_metrics: dict[str, float],
+    val_metrics: dict[str, float],
+    best_val: float,
+    epochs_without_improvement: int,
+    cfg: dict,
+) -> str | None:
+    monitor_cfg = cfg["training"].get("overfit_monitor", {})
+    if not monitor_cfg or not bool(monitor_cfg.get("enabled", True)):
+        return None
+    min_epoch = int(monitor_cfg.get("min_epoch", 20))
+    patience = int(monitor_cfg.get("patience", 15))
+    gap_ratio = float(monitor_cfg.get("gap_ratio", 1.8))
+    if epoch < min_epoch:
+        return None
+
+    train_loss = max(train_metrics["loss"], 1e-12)
+    val_loss = val_metrics["loss"]
+    large_gap = val_loss / train_loss >= gap_ratio
+    stalled_val = epochs_without_improvement >= patience
+    if large_gap and stalled_val:
+        return (
+            "OVERFIT_WARNING: validation loss has not improved for "
+            f"{epochs_without_improvement} epochs and val/train loss ratio is "
+            f"{val_loss / train_loss:.2f}. Current droid_100 subset may be too small; "
+            "consider switching to a larger DROID subset or droid_1.0.1 before further scaling IDM."
+        )
+    if large_gap:
+        return (
+            "OVERFIT_NOTE: val/train loss ratio is "
+            f"{val_loss / train_loss:.2f}; monitor benchmark metrics and consider a larger dataset if this persists."
+        )
+    return None
+
+
 def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tuple[torch.Tensor, dict]:
     loss_state = F.mse_loss(outputs["predicted_state_future"], batch["state_future"])
     loss_future_latent = F.mse_loss(outputs["predicted_visual_future"], batch["visual_future"])
@@ -76,6 +114,12 @@ def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tu
         1 + outputs["latent_logvar"] - outputs["latent_mu"].pow(2) - outputs["latent_logvar"].exp()
     )
     loss_action_smooth = outputs["latent_action"].pow(2).mean()
+    pred_future_embed = F.normalize(outputs["predicted_visual_future"].mean(dim=1), dim=-1)
+    true_future_embed = F.normalize(batch["visual_future"].mean(dim=1), dim=-1)
+    temperature = float(cfg["training"].get("retrieval_temperature", 0.1))
+    logits = pred_future_embed @ true_future_embed.T / max(temperature, 1e-6)
+    targets = torch.arange(logits.shape[0], device=logits.device)
+    loss_retrieval = 0.5 * (F.cross_entropy(logits, targets) + F.cross_entropy(logits.T, targets))
 
     weights = cfg["training"]
     total = (
@@ -83,6 +127,7 @@ def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tu
         + float(weights.get("loss_state", 0.1)) * loss_state
         + float(weights.get("loss_kl", 0.0001)) * loss_kl
         + float(weights.get("loss_action_smooth", 0.001)) * loss_action_smooth
+        + float(weights.get("loss_retrieval", 0.0)) * loss_retrieval
     )
     metrics = {
         "loss": float(total.detach().cpu()),
@@ -90,6 +135,7 @@ def compute_loss(outputs: dict[str, torch.Tensor], batch: dict, cfg: dict) -> tu
         "future_latent": float(loss_future_latent.detach().cpu()),
         "kl": float(loss_kl.detach().cpu()),
         "action_l2": float(loss_action_smooth.detach().cpu()),
+        "retrieval": float(loss_retrieval.detach().cpu()),
     }
     return total, metrics
 
@@ -104,7 +150,7 @@ def run_epoch(
 ) -> dict[str, float]:
     is_train = optimizer is not None
     model.train(is_train)
-    totals = {"loss": 0.0, "state": 0.0, "future_latent": 0.0, "kl": 0.0, "action_l2": 0.0}
+    totals = {"loss": 0.0, "state": 0.0, "future_latent": 0.0, "kl": 0.0, "action_l2": 0.0, "retrieval": 0.0}
     grad_clip_norm = cfg["training"].get("grad_clip_norm")
 
     for batch in loader:
@@ -204,6 +250,7 @@ def main() -> None:
     checkpoint_dir = Path(cfg["training"]["checkpoint_dir"])
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     best_val = float("inf")
+    epochs_without_improvement = 0
     total_epochs = int(cfg["training"]["epochs"])
     train_start = time.perf_counter()
     epoch_durations: list[float] = []
@@ -224,12 +271,15 @@ def main() -> None:
 
         print(
             "epoch={:03d} train_loss={:.6f} train_state={:.6f} "
-            "val_loss={:.6f} val_state={:.6f} epoch_time={} eta={}".format(
+            "train_retrieval={:.6f} val_loss={:.6f} val_state={:.6f} "
+            "val_retrieval={:.6f} epoch_time={} eta={}".format(
                 epoch,
                 train_metrics["loss"],
                 train_metrics["state"],
+                train_metrics["retrieval"],
                 val_metrics["loss"],
                 val_metrics["state"],
+                val_metrics["retrieval"],
                 format_duration(epoch_seconds),
                 format_duration(eta_seconds),
             )
@@ -247,7 +297,13 @@ def main() -> None:
         torch.save(state, checkpoint_dir / "latest.pt")
         if val_metrics["loss"] < best_val:
             best_val = val_metrics["loss"]
+            epochs_without_improvement = 0
             torch.save(state, checkpoint_dir / "best.pt")
+        else:
+            epochs_without_improvement += 1
+        warning = overfit_warning(epoch, train_metrics, val_metrics, best_val, epochs_without_improvement, cfg)
+        if warning is not None:
+            print(warning)
     print(f"training complete total_time={format_duration(time.perf_counter() - train_start)}")
 
 

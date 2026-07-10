@@ -37,15 +37,36 @@ class VisualTokenProjector(nn.Module):
         hidden_dim: int,
         max_visual_tokens: int,
         num_views: int = 0,
+        cross_view_layers: int = 0,
+        num_heads: int = 12,
+        ffn_dim: int = 3072,
+        dropout: float = 0.1,
     ) -> None:
         super().__init__()
         self.visual_token_dim = visual_token_dim
         self.hidden_dim = hidden_dim
         self.max_visual_tokens = max_visual_tokens
         self.num_views = num_views
+        self.cross_view_layers = cross_view_layers
         self.input_proj = nn.Linear(visual_token_dim, hidden_dim)
         self.pos_embed = nn.Parameter(torch.zeros(1, max_visual_tokens, hidden_dim))
         self.view_embed = nn.Parameter(torch.zeros(1, max(num_views, 1), hidden_dim)) if num_views > 1 else None
+        self.cross_view_fusion = None
+        if cross_view_layers > 0:
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dim,
+                nhead=num_heads,
+                dim_feedforward=ffn_dim,
+                dropout=dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            self.cross_view_fusion = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=cross_view_layers,
+                norm=nn.LayerNorm(hidden_dim),
+            )
         nn.init.normal_(self.pos_embed, std=0.02)
         if self.view_embed is not None:
             nn.init.normal_(self.view_embed, std=0.02)
@@ -64,6 +85,8 @@ class VisualTokenProjector(nn.Module):
             tokens_per_view = num_tokens // self.num_views
             view_ids = torch.arange(self.num_views, device=tokens.device).repeat_interleave(tokens_per_view)
             projected = projected + self.view_embed[:, view_ids]
+        if self.cross_view_fusion is not None:
+            projected = self.cross_view_fusion(projected)
         return projected
 
 

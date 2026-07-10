@@ -22,6 +22,8 @@ class InverseDynamicsTransformer(nn.Module):
         max_visual_tokens: int = 512,
         use_state_condition: bool = True,
         num_views: int = 0,
+        cross_view_fusion_layers: int = 0,
+        use_residual_branch: bool = False,
     ) -> None:
         super().__init__()
         self.visual_token_dim = visual_token_dim
@@ -29,17 +31,23 @@ class InverseDynamicsTransformer(nn.Module):
         self.latent_action_dim = latent_action_dim
         self.hidden_dim = hidden_dim
         self.use_state_condition = use_state_condition
+        self.use_residual_branch = use_residual_branch
 
         self.visual_projector = VisualTokenProjector(
             visual_token_dim=visual_token_dim,
             hidden_dim=hidden_dim,
             max_visual_tokens=max_visual_tokens,
             num_views=num_views,
+            cross_view_layers=cross_view_fusion_layers,
+            num_heads=num_heads,
+            ffn_dim=ffn_dim,
+            dropout=dropout,
         )
         self.state_token = nn.Linear(state_dim, hidden_dim)
         self.inverse_cls = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.current_type = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.future_type = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.residual_type = nn.Parameter(torch.zeros(1, 1, hidden_dim)) if use_residual_branch else None
         self.state_type = nn.Parameter(torch.zeros(1, 1, hidden_dim))
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -94,10 +102,17 @@ class InverseDynamicsTransformer(nn.Module):
         current = self.visual_projector(visual_t) + self.current_type
         future = self.visual_projector(visual_future) + self.future_type
         cls = self.inverse_cls.expand(batch_size, -1, -1)
+        segments = [cls]
         if self.use_state_condition:
             state = self.state_token(state_t).unsqueeze(1) + self.state_type
-            return torch.cat([cls, state, current, future], dim=1)
-        return torch.cat([cls, current, future], dim=1)
+            segments.append(state)
+        segments.extend([current, future])
+        if self.use_residual_branch:
+            if self.residual_type is None:
+                raise RuntimeError("residual_type is not initialized")
+            residual = self.visual_projector(visual_future - visual_t) + self.residual_type
+            segments.append(residual)
+        return torch.cat(segments, dim=1)
 
     def sample_latent(
         self,
@@ -115,4 +130,6 @@ class InverseDynamicsTransformer(nn.Module):
         nn.init.normal_(self.inverse_cls, std=0.02)
         nn.init.normal_(self.current_type, std=0.02)
         nn.init.normal_(self.future_type, std=0.02)
+        if self.residual_type is not None:
+            nn.init.normal_(self.residual_type, std=0.02)
         nn.init.normal_(self.state_type, std=0.02)

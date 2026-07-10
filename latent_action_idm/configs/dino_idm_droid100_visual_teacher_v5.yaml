@@ -1,0 +1,72 @@
+project:
+  name: droid100_visual_only_idm_teacher_v5
+  seed: 42
+
+data:
+  episode_manifest: data/manifests/droid100_episodes.jsonl
+  latent_manifest: data/manifests/droid100_train.jsonl
+  val_manifest: data/manifests/droid100_val.jsonl
+  latent_dir: data/latents/dino_droid100
+  fps: 15
+  future_offset_frames: 15
+  stride_frames: 8
+  max_windows_per_episode: null
+  state_dim: 7
+  num_workers: 2
+  visual_normalization:
+    enabled: true
+    stats_path: data/latents/dino_droid100_visual_stats.npz
+    eps: 1.0e-6
+    overwrite: false
+
+dino:
+  backend: transformers
+  model_name: /data/chy/huggingface/dinov3-vitb16
+  image_size: 224
+  feature_mode: patch_tokens
+  num_prefix_tokens: 1
+  view_fusion: concat
+  num_visual_tokens: 400
+  visual_token_dim: 768
+  device: cuda
+  precision: fp16
+
+model:
+  visual_token_dim: 768
+  max_visual_tokens: 512
+  state_dim: 7
+  latent_action_dim: 128
+  hidden_dim: 768
+  encoder_layers: 8
+  decoder_layers: 10
+  num_heads: 12
+  ffn_dim: 3072
+  dropout: 0.2
+  use_state_in_idm: false
+  num_views: 2
+  residual_future_prediction: true
+  # v5 additions.
+  cross_view_fusion_layers: 1
+  use_residual_idm_branch: true
+
+training:
+  device: cuda
+  batch_size: 8
+  epochs: 150
+  lr: 0.00005
+  min_lr: 0.000005
+  lr_schedule: cosine
+  weight_decay: 0.05
+  grad_clip_norm: 1.0
+  loss_future_latent: 1.0
+  loss_state: 0.0
+  loss_kl: 0.0005
+  loss_action_smooth: 0.0005
+  loss_retrieval: 0.05
+  retrieval_temperature: 0.1
+  overfit_monitor:
+    enabled: true
+    min_epoch: 20
+    patience: 15
+    gap_ratio: 1.8
+  checkpoint_dir: checkpoints/latent_action_idm_droid100_visual_teacher_v5

@@ -122,6 +122,49 @@ v4 teacher 已达到 droid_100 sanity benchmark 的可用水平。
 下一步应冻结 v4 IDM teacher，训练 DiT-LaWM denoiser。
 ```
 
+IDM teacher 提升计划：
+
+```text
+v5 目标:
+  在 v4 基础上进一步提升 z_teacher 精度。
+
+v5 改动:
+  1. explicit residual IDM branch
+     IDM posterior 额外接收 delta_u = u_T - u_t 的 residual tokens。
+
+  2. cross-view fusion
+     在 camera-aware tokens 上增加 1 层 cross-view Transformer fusion。
+
+  3. retrieval / contrastive loss
+     让 predicted future embedding 在 batch 内最接近自己的真实 u_T。
+
+  4. overfit monitor
+     如果验证集长期不提升且 val/train gap 过大，训练日志会提示当前 droid_100 subset 可能太小，
+     需要切换到更大的 DROID subset 或 droid_1.0.1。
+```
+
+v5 配置：
+
+```text
+latent_action_idm/configs/dino_idm_droid100_visual_teacher_v5.yaml
+```
+
+v5 checkpoint：
+
+```text
+checkpoints/latent_action_idm_droid100_visual_teacher_v5/best.pt
+```
+
+v5 是否替代 v4 的判断标准：
+
+```text
+future_improvement_vs_identity > 0.27238409
+transition_delta_cosine > 0.50969794
+retrieval_top1 > 0.50579151
+retrieval_top5 >= 0.92792793
+latent_mu_std_min 不接近 0
+```
+
 下一步：
 
 ```text

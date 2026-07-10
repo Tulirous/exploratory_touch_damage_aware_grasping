@@ -33,6 +33,8 @@ class Stage1LaWAM(nn.Module):
         use_state_in_idm: bool = True,
         num_views: int = 0,
         residual_future_prediction: bool = False,
+        cross_view_fusion_layers: int = 0,
+        use_residual_idm_branch: bool = False,
     ) -> None:
         super().__init__()
         self.visual_token_dim = visual_token_dim
@@ -42,6 +44,8 @@ class Stage1LaWAM(nn.Module):
         self.use_state_in_idm = use_state_in_idm
         self.num_views = num_views
         self.residual_future_prediction = residual_future_prediction
+        self.cross_view_fusion_layers = cross_view_fusion_layers
+        self.use_residual_idm_branch = use_residual_idm_branch
 
         self.inverse_dynamics = InverseDynamicsTransformer(
             visual_token_dim=visual_token_dim,
@@ -55,6 +59,8 @@ class Stage1LaWAM(nn.Module):
             max_visual_tokens=max_visual_tokens,
             use_state_condition=use_state_in_idm,
             num_views=num_views,
+            cross_view_fusion_layers=cross_view_fusion_layers,
+            use_residual_branch=use_residual_idm_branch,
         )
         self.latent_world_model = LatentWorldModelDecoder(
             visual_token_dim=visual_token_dim,
@@ -66,6 +72,7 @@ class Stage1LaWAM(nn.Module):
             dropout=dropout,
             max_visual_tokens=max_visual_tokens,
             num_views=num_views,
+            cross_view_fusion_layers=cross_view_fusion_layers,
             residual_prediction=residual_future_prediction,
         )
         self.state_predictor = MLP(

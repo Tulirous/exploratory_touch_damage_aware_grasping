@@ -312,6 +312,77 @@ v4 teacher 明显优于 identity / mean-delta / nearest-neighbor baseline。
 它可以作为后续 frozen-IDM DiT-LaWM 的 z_teacher 来源。
 ```
 
+## IDM Teacher v5 Plan
+
+由于 `z_teacher` 同时影响：
+
+```text
+Stage 1:
+  z_teacher + u_t -> train DiT-LaWM
+
+Stage 2:
+  VLM(text, u_t) -> z_student ≈ z_teacher
+```
+
+IDM teacher 的精度需要优先提升。v5 在 v4 基础上增加：
+
+```text
+1. Explicit residual IDM branch
+   IDM posterior 不只看 u_t 和 u_T，也显式接收 delta_u = u_T - u_t。
+
+2. Cross-view fusion
+   camera-aware tokens 之后增加 1 层 Transformer fusion，
+   让 base/global 和 wrist tokens 能更充分交互。
+
+3. Retrieval / contrastive loss
+   predicted future embedding 应在 batch 内最接近自己的真实 u_T，
+   直接优化 benchmark 里的 retrieval_topK / semantic future alignment。
+
+4. Overfit monitor
+   如果验证集长期不提升且 val/train loss gap 过大，训练脚本会打印告警，
+   提醒当前 droid_100 subset 可能不足，需要切换更大的 DROID subset 或 droid_1.0.1。
+```
+
+v5 配置：
+
+```text
+latent_action_idm/configs/dino_idm_droid100_visual_teacher_v5.yaml
+```
+
+训练：
+
+```bash
+python -m latent_action_idm.train_idm \
+  --config latent_action_idm/configs/dino_idm_droid100_visual_teacher_v5.yaml
+```
+
+Benchmark：
+
+```bash
+python -m latent_action_idm.scripts.benchmark_idm_teacher \
+  --checkpoint checkpoints/latent_action_idm_droid100_visual_teacher_v5/best.pt \
+  --train-manifest data/manifests/droid100_train.jsonl \
+  --val-manifest data/manifests/droid100_val.jsonl \
+  --output outputs/idm_teacher_benchmark/droid100_visual_teacher_v5.txt \
+  --batch-size 8 \
+  --device cuda
+```
+
+v5 替代 v4 的最低标准：
+
+```text
+future_improvement_vs_identity > 0.27238409
+transition_delta_cosine > 0.50969794
+retrieval_top1 > 0.50579151
+retrieval_top5 >= 0.92792793
+```
+
+如果 v5 训练出现 `OVERFIT_WARNING`，不要继续盲目加大模型，应优先扩大数据：
+
+```text
+droid_100 -> larger DROID subset -> droid_1.0.1
+```
+
 ## 后续创新修改路线
 
 复现 LaWAM Stage 1 后，再加入本项目的触觉模块：

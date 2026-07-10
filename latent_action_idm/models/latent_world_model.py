@@ -20,6 +20,7 @@ class LatentWorldModelDecoder(nn.Module):
         dropout: float = 0.1,
         max_visual_tokens: int = 512,
         num_views: int = 0,
+        cross_view_fusion_layers: int = 0,
         residual_prediction: bool = False,
     ) -> None:
         super().__init__()
@@ -32,6 +33,10 @@ class LatentWorldModelDecoder(nn.Module):
             hidden_dim=hidden_dim,
             max_visual_tokens=max_visual_tokens,
             num_views=num_views,
+            cross_view_layers=cross_view_fusion_layers,
+            num_heads=num_heads,
+            ffn_dim=ffn_dim,
+            dropout=dropout,
         )
         self.current_type = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.latent_to_hidden = nn.Sequential(
