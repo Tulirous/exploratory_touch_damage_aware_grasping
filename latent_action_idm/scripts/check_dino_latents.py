@@ -35,6 +35,41 @@ def ridge_r2(x: np.ndarray, y: np.ndarray, ridge: float = 1e-3) -> float:
     return float("nan") if ss_tot <= 1e-12 else 1.0 - ss_res / ss_tot
 
 
+def ridge_holdout_r2(
+    x: np.ndarray,
+    y: np.ndarray,
+    seed: int,
+    val_ratio: float = 0.2,
+    ridge: float = 1e-3,
+) -> float:
+    if x.shape[0] < 10:
+        return float("nan")
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(x.shape[0])
+    val_count = max(1, int(round(x.shape[0] * val_ratio)))
+    val_indices = indices[:val_count]
+    train_indices = indices[val_count:]
+    x_train = x[train_indices]
+    y_train = y[train_indices]
+    x_val = x[val_indices]
+    y_val = y[val_indices]
+
+    x_mean = x_train.mean(axis=0, keepdims=True)
+    x_std = x_train.std(axis=0, keepdims=True).clip(min=1e-6)
+    x_train = (x_train - x_mean) / x_std
+    x_val = (x_val - x_mean) / x_std
+    x_train = np.concatenate([x_train, np.ones((len(x_train), 1), dtype=x_train.dtype)], axis=1)
+    x_val = np.concatenate([x_val, np.ones((len(x_val), 1), dtype=x_val.dtype)], axis=1)
+    weights = np.linalg.solve(
+        x_train.T @ x_train + ridge * np.eye(x_train.shape[1], dtype=x_train.dtype),
+        x_train.T @ y_train,
+    )
+    prediction = x_val @ weights
+    ss_res = float(np.square(y_val - prediction).sum())
+    ss_tot = float(np.square(y_val - y_train.mean(axis=0, keepdims=True)).sum())
+    return float("nan") if ss_tot <= 1e-12 else 1.0 - ss_res / ss_tot
+
+
 def random_project(
     x: np.ndarray,
     output_dim: int,
@@ -53,10 +88,16 @@ def random_project(
     return (x.astype(np.float32) @ projection).astype(np.float64)
 
 
-def load_manifest_arrays(manifest: Path, max_samples: int | None = None) -> tuple[list[dict[str, Any]], dict[str, np.ndarray]]:
+def load_manifest_arrays(
+    manifest: Path,
+    max_samples: int | None = None,
+    seed: int = 42,
+) -> tuple[list[dict[str, Any]], dict[str, np.ndarray]]:
     rows = read_jsonl(manifest)
-    if max_samples is not None:
-        rows = rows[:max_samples]
+    if max_samples is not None and max_samples < len(rows):
+        rng = np.random.default_rng(seed)
+        selected = sorted(rng.choice(len(rows), size=max_samples, replace=False).tolist())
+        rows = [rows[index] for index in selected]
     visual_t = []
     visual_future = []
     state_t = []
@@ -123,10 +164,15 @@ def summarize_latents(
         "state_delta_l2_mean": float(np.linalg.norm(state_delta, axis=1).mean()),
         "visual_delta_ridge_features": float(projected_delta.shape[1]),
         "visual_delta_to_state_delta_r2": ridge_r2(projected_delta, state_delta),
+        "visual_delta_to_state_delta_holdout_r2": ridge_holdout_r2(
+            projected_delta, state_delta, seed
+        ),
     }
-    if vt.shape[1] >= 392:
-        base_delta = delta[:, :196]
-        wrist_delta = delta[:, 196:392]
+    if vt.shape[1] >= 2 and vt.shape[1] % 2 == 0:
+        tokens_per_view = vt.shape[1] // 2
+        base_delta = delta[:, :tokens_per_view]
+        wrist_delta = delta[:, tokens_per_view:]
+        metrics["tokens_per_view"] = float(tokens_per_view)
         metrics["base_current_future_mse"] = float(np.square(base_delta).mean())
         metrics["wrist_current_future_mse"] = float(np.square(wrist_delta).mean())
     return metrics
@@ -213,11 +259,13 @@ def main() -> None:
     parser.add_argument("--split-name", default="val")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument("--ridge-features", type=int, default=2048)
+    parser.add_argument("--ridge-features", type=int, default=256)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    rows, arrays = load_manifest_arrays(Path(args.manifest), max_samples=args.max_samples)
+    rows, arrays = load_manifest_arrays(
+        Path(args.manifest), max_samples=args.max_samples, seed=args.seed
+    )
     metrics = summarize_latents(arrays, ridge_features=args.ridge_features, seed=args.seed)
     nn_metrics, nn_rows = nearest_neighbor_report(
         rows,
