@@ -1,0 +1,36 @@
+project:
+  name: hot3d_hand_latent_prior_stage2
+  seed: 43
+
+data:
+  train_manifest: /data/chy/hot3d_hand_lwm/pilot50/train.jsonl
+  val_manifest: /data/chy/hot3d_hand_lwm/pilot50/val.jsonl
+  num_workers: 4
+
+teacher:
+  stage1_checkpoint: /data/chy/hot3d_hand_lwm/pilot50/stage1_checkpoints/best.pt
+
+prior:
+  hidden_dim: 128
+  num_layers: 2
+  num_heads: 4
+  ffn_dim: 512
+  dropout: 0.1
+
+training:
+  device: cuda
+  precision: bf16
+  batch_size: 64
+  epochs: 100
+  lr: 0.0002
+  weight_decay: 0.01
+  grad_clip_norm: 1.0
+  checkpoint_dir: /data/chy/hot3d_hand_lwm/pilot50/stage2_prior_checkpoints
+  loss_weights:
+    latent_mean: 1.0
+    latent_log_variance: 0.05
+    rollout_state: 1.0
+    rollout_wrist_translation: 5.0
+    rollout_wrist_rotation: 0.5
+    rollout_mano_pose: 0.5
+    rollout_velocity: 0.2

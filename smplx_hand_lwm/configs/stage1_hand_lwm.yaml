@@ -1,0 +1,60 @@
+project:
+  name: smplx_hand_latent_world_model_stage1
+  seed: 42
+
+data:
+  train_manifest: data/manifests/hot3d_hand_train.jsonl
+  val_manifest: data/manifests/hot3d_hand_val.jsonl
+  fps: 30
+  # One hand track is one sample stream. Left hands should be mirrored into a
+  # common canonical convention or carry a handedness field in later versions.
+  context_length: 4
+  future_length: 12
+  stride_frames: 4
+  # HOT3D MANO state: 3 wrist translation + 6 wrist rotation + 15 PCA pose.
+  hand_state_dim: 24
+  num_hand_joints: 21
+  num_contact_points: 5
+  coordinate_frame: clip_initial_wrist
+  num_workers: 4
+
+model:
+  latent_action_dim: 64
+  hidden_dim: 256
+  encoder_layers: 4
+  decoder_layers: 4
+  num_heads: 8
+  ffn_dim: 1024
+  dropout: 0.1
+  residual_prediction: true
+
+training:
+  device: cuda
+  precision: bf16
+  batch_size: 128
+  epochs: 100
+  lr: 0.0002
+  weight_decay: 0.01
+  grad_clip_norm: 1.0
+  checkpoint_dir: checkpoints/smplx_hand_lwm/stage1
+  loss_weights:
+    state: 1.0
+    wrist_translation: 1.0
+    wrist_rotation: 0.5
+    mano_pose: 0.5
+    joints: 1.0
+    contact: 0.2
+    velocity: 0.2
+    acceleration: 0.05
+    kl: 0.0001
+    latent_l2: 0.00001
+
+evaluation:
+  metrics:
+    - mpjpe_mm
+    - fingertip_mpjpe_mm
+    - wrist_ade_mm
+    - wrist_fde_mm
+    - rotation_error_deg
+    - contact_f1
+    - latent_action_retrieval_top1
