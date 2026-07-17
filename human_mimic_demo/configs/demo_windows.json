@@ -1,0 +1,51 @@
+{
+  "camera": {
+    "width": 640,
+    "height": 480,
+    "fps": 30,
+    "min_confidence": 0.65,
+    "depth_median_radius_px": 3
+  },
+  "arm": {
+    "host": "192.168.1.10",
+    "dry_run_initial_tcp": [0.40, -0.20, 0.35, 0.0, 3.14, 0.0],
+    "servo_speed": 0.15,
+    "servo_acceleration": 0.30,
+    "servo_period_s": 0.04,
+    "servo_lookahead_s": 0.10,
+    "servo_gain": 200
+  },
+  "arm_mapping": {
+    "camera_to_robot_rotation": [[0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+    "translation_scale": [0.70, 0.70, 0.70],
+    "max_delta_m": [0.20, 0.20, 0.15],
+    "max_tcp_step_m": 0.008,
+    "workspace_min_m": [0.20, -0.55, 0.15],
+    "workspace_max_m": [0.65, 0.20, 0.60]
+  },
+  "hand": {
+    "sdk_path": "C:\\robot\\linkerhand-python-sdk",
+    "can_channel": "PCAN_USBBUS1",
+    "modbus": "None",
+    "speed": [50, 50, 50, 50, 50, 50],
+    "torque": [40, 40, 40, 40, 40, 40],
+    "force_sensor_enabled": false
+  },
+  "retargeting": {
+    "open_position": [240, 220, 240, 240, 240, 240],
+    "closed_position": [40, 50, 40, 40, 40, 40],
+    "safe_min": [35, 40, 35, 35, 35, 35],
+    "safe_max": [245, 230, 245, 245, 245, 245],
+    "max_bend_radians": 3.5,
+    "thumb_abduction_distance_ratio": [0.45, 1.70],
+    "low_pass_alpha": 0.30,
+    "max_command_step": 8
+  },
+  "safety": {"tracking_timeout_s": 0.35},
+  "force_guard": {
+    "enabled": false,
+    "normal_soft_limit": 180,
+    "retreat_command_step": 5
+  },
+  "logging": {"directory": "human_mimic_demo/logs"}
+}

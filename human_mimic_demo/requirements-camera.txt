@@ -1,0 +1,6 @@
+-r requirements-core.txt
+opencv-python>=4.8
+mediapipe>=0.10
+pyrealsense2>=2.54
+# On Apple Silicon macOS a compatible wheel may be unavailable; build the
+# librealsense Python bindings from source when pip cannot resolve this package.
