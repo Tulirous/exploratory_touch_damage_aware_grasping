@@ -167,7 +167,12 @@ class MimicDemo:
         first_valid = True
         while self.running and (duration <= 0.0 or time.monotonic() - started < duration):
             sample = self.tracker.read()
-            if sample is not None and sample.valid() and first_valid:
+            if (
+                sample is not None
+                and sample.valid()
+                and sample.confidence >= self.confidence_threshold
+                and first_valid
+            ):
                 if auto_calibrate:
                     self.calibrate(sample)
                 if auto_arm:

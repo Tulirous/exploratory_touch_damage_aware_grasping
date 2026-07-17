@@ -75,8 +75,8 @@ MediaPipe Tasks Hand Landmarker 负责无标记右手 21 点；D435 在手腕像
 反投影到米制 XYZ。手型只使用相对 21 点，因此不受腕部绝对深度影响。
 
 新版 MediaPipe 已移除 `mp.solutions`；实时后端使用 VIDEO 模式的 Tasks API，并从
-官方模型仓库单独下载 `hand_landmarker.task`。D435 原始画面未镜像，而 MediaPipe
-handedness 按自拍镜像约定输出，因此默认以其 `Left` 标签选择操作者物理右手。
+官方模型仓库单独下载 `hand_landmarker.task`。当前 Windows D435 实测以 MediaPipe
+的 `Right` 标签对应目标右手；标签保留为配置项，避免不同镜像链路下写死。
 
 ### MANO/SMPL-X 后端
 

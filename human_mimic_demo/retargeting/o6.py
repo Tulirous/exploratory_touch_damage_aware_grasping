@@ -19,14 +19,15 @@ FINGER_CHAINS = {
 
 @dataclass
 class FeatureCalibration:
-    open_flex: np.ndarray
-    closed_flex: np.ndarray
+    open_raw: np.ndarray
+    closed_raw: np.ndarray
 
     @classmethod
     def defaults(cls) -> "FeatureCalibration":
         return cls(
-            open_flex=np.zeros(5, dtype=np.float64),
-            closed_flex=np.ones(5, dtype=np.float64),
+            # Raw order: five flexions followed by thumb abduction.
+            open_raw=np.asarray([0, 0, 0, 0, 0, 1], dtype=np.float64),
+            closed_raw=np.asarray([1, 1, 1, 1, 1, 0], dtype=np.float64),
         )
 
 
@@ -44,6 +45,7 @@ class O6Retargeter:
         self.safe_max = np.asarray(config.get("safe_max", [255] * 6), dtype=np.float64)
         self.alpha = float(config.get("low_pass_alpha", 0.3))
         self.max_step = float(config.get("max_command_step", 8.0))
+        self.endpoint_deadband = float(config.get("endpoint_deadband", 0.08))
         if any(array.shape != (6,) for array in (self.open_position, self.closed_position, self.safe_min, self.safe_max)):
             raise ValueError("Every O6 position/range field must contain exactly six values")
         if np.any(self.safe_min > self.safe_max):
@@ -78,27 +80,32 @@ class O6Retargeter:
         return np.concatenate([flex, [thumb_abduction]])
 
     def normalize_features(self, raw: np.ndarray) -> HandFeatures:
-        denominator = np.maximum(
-            self.calibration.closed_flex - self.calibration.open_flex, 1e-4
+        delta = self.calibration.closed_raw - self.calibration.open_raw
+        default_direction = np.asarray([1, 1, 1, 1, 1, -1], dtype=np.float64)
+        denominator = np.where(
+            np.abs(delta) >= 1e-6,
+            delta,
+            1e-6 * default_direction,
         )
-        flex = np.clip((raw[:5] - self.calibration.open_flex) / denominator, 0.0, 1.0)
+        closure = np.clip((raw - self.calibration.open_raw) / denominator, 0.0, 1.0)
+        closure = np.where(closure <= self.endpoint_deadband, 0.0, closure)
+        closure = np.where(closure >= 1.0 - self.endpoint_deadband, 1.0, closure)
         return HandFeatures(
-            thumb_flex=float(flex[0]),
-            thumb_abduction=float(raw[5]),
-            index_flex=float(flex[1]),
-            middle_flex=float(flex[2]),
-            ring_flex=float(flex[3]),
-            pinky_flex=float(flex[4]),
+            thumb_flex=float(closure[0]),
+            thumb_abduction=float(1.0 - closure[5]),
+            index_flex=float(closure[1]),
+            middle_flex=float(closure[2]),
+            ring_flex=float(closure[3]),
+            pinky_flex=float(closure[4]),
         )
 
     def record_open(self, joints: np.ndarray) -> None:
-        self.calibration.open_flex = self.extract_raw_features(joints)[:5]
+        self.calibration.open_raw = self.extract_raw_features(joints)
+        self.reset_filter()
 
     def record_closed(self, joints: np.ndarray) -> None:
-        closed = self.extract_raw_features(joints)[:5]
-        self.calibration.closed_flex = np.maximum(
-            closed, self.calibration.open_flex + 0.05
-        )
+        self.calibration.closed_raw = self.extract_raw_features(joints)
+        self.reset_filter()
 
     def retarget(self, joints: np.ndarray) -> tuple[np.ndarray, HandFeatures]:
         features = self.normalize_features(self.extract_raw_features(joints))

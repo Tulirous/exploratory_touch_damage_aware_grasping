@@ -37,7 +37,7 @@ class RealSenseMediaPipeTracker(HandTracker):
         self.fps = int(config.get("fps", 30))
         self.min_confidence = float(config.get("min_confidence", 0.65))
         self.depth_radius = int(config.get("depth_median_radius_px", 3))
-        self.input_is_mirrored = bool(config.get("input_is_mirrored", False))
+        self.expected_handedness = str(config.get("mediapipe_handedness_label", "Right"))
         model_path = Path(
             config.get(
                 "hand_landmarker_model_path",
@@ -91,11 +91,8 @@ class RealSenseMediaPipeTracker(HandTracker):
         self._last_timestamp_ms = timestamp_ms
         result = self.hand_landmarker.detect_for_video(mp_image, timestamp_ms)
         if not result.hand_landmarks or not result.handedness:
-            return None
+            return self._no_detection(frame_bgr)
 
-        # MediaPipe handedness assumes selfie-mirrored input. D435 frames are not
-        # mirrored by default, so physical right is reported as Left.
-        expected_label = "Right" if self.input_is_mirrored else "Left"
         selected_index = None
         selected_score = 0.0
         for index, categories in enumerate(result.handedness):
@@ -104,19 +101,19 @@ class RealSenseMediaPipeTracker(HandTracker):
             category = categories[0]
             label = str(category.category_name)
             score = float(category.score)
-            if label == expected_label and score >= self.min_confidence:
+            if label == self.expected_handedness and score >= self.min_confidence:
                 selected_index = index
                 selected_score = score
                 break
         if selected_index is None:
-            return None
+            return self._no_detection(frame_bgr)
 
         image_landmarks = result.hand_landmarks[selected_index]
         wrist_u = int(np.clip(image_landmarks[0].x * self.width, 0, self.width - 1))
         wrist_v = int(np.clip(image_landmarks[0].y * self.height, 0, self.height - 1))
         wrist_depth = self._median_depth(depth_frame, wrist_u, wrist_v)
         if wrist_depth <= 0.0:
-            return None
+            return self._no_detection(frame_bgr)
 
         intrinsics = color_frame.profile.as_video_stream_profile().intrinsics
         wrist_xyz = np.asarray(
@@ -151,6 +148,16 @@ class RealSenseMediaPipeTracker(HandTracker):
     def close(self) -> None:
         self.hand_landmarker.close()
         self.pipeline.stop()
+
+    def _no_detection(self, frame_bgr: np.ndarray) -> TrackingSample:
+        return TrackingSample(
+            timestamp=time.time(),
+            wrist_xyz_m=np.zeros(3, dtype=np.float64),
+            hand_joints=np.zeros((21, 3), dtype=np.float64),
+            confidence=0.0,
+            frame_bgr=frame_bgr,
+            source="realsense_mediapipe_no_target",
+        )
 
     def _draw_hand(self, frame_bgr: np.ndarray, landmarks: list) -> None:
         connections = (

@@ -34,6 +34,22 @@ class RetargetingTest(unittest.TestCase):
         closed_command, _ = retargeter.retarget(SyntheticTracker._hand_landmarks(1.0))
         self.assertTrue(np.all(closed_command[[2, 3, 4, 5]] < open_command[[2, 3, 4, 5]]))
 
+    def test_recorded_endpoints_map_to_255_and_zero(self):
+        retargeter = O6Retargeter(config())
+        retargeter.open_position = np.asarray([255] * 6, dtype=np.float64)
+        retargeter.closed_position = np.asarray([0] * 6, dtype=np.float64)
+        retargeter.safe_min = np.asarray([0] * 6, dtype=np.float64)
+        retargeter.safe_max = np.asarray([255] * 6, dtype=np.float64)
+        open_joints = SyntheticTracker._hand_landmarks(0.0)
+        closed_joints = SyntheticTracker._hand_landmarks(1.0)
+        retargeter.record_open(open_joints)
+        retargeter.record_closed(closed_joints)
+        open_command, _ = retargeter.retarget(open_joints)
+        retargeter.reset_filter()
+        closed_command, _ = retargeter.retarget(closed_joints)
+        np.testing.assert_array_equal(open_command, [255] * 6)
+        np.testing.assert_array_equal(closed_command, [0] * 6)
+
 
 if __name__ == "__main__":
     unittest.main()

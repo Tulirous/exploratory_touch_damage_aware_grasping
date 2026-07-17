@@ -4,7 +4,7 @@ camera:
   fps: 30
   min_confidence: 0.65
   depth_median_radius_px: 3
-  input_is_mirrored: false
+  mediapipe_handedness_label: "Right"
   hand_landmarker_model_path: "human_mimic_demo/assets/hand_landmarker.task"
 
 arm:
@@ -40,12 +40,13 @@ hand:
 
 retargeting:
   # Placeholders only. Measure every value on the physical O6 before hardware use.
-  open_position: [240, 220, 240, 240, 240, 240]
-  closed_position: [40, 50, 40, 40, 40, 40]
-  safe_min: [35, 40, 35, 35, 35, 35]
-  safe_max: [245, 230, 245, 245, 245, 245]
+  open_position: [255, 255, 255, 255, 255, 255]
+  closed_position: [0, 0, 0, 0, 0, 0]
+  safe_min: [0, 0, 0, 0, 0, 0]
+  safe_max: [255, 255, 255, 255, 255, 255]
   max_bend_radians: 3.5
   thumb_abduction_distance_ratio: [0.45, 1.70]
+  endpoint_deadband: 0.08
   low_pass_alpha: 0.30
   max_command_step: 8
 
