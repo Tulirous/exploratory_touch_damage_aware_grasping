@@ -52,6 +52,7 @@ retargeting:
 
 safety:
   tracking_timeout_s: 0.35
+  open_hand_on_tracking_loss: true
 
 force_guard:
   # Keep disabled until the exact O6 sensor layout and unloaded baseline are measured.

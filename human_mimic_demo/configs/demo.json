@@ -44,7 +44,10 @@
     "low_pass_alpha": 0.30,
     "max_command_step": 8
   },
-  "safety": {"tracking_timeout_s": 0.35},
+  "safety": {
+    "tracking_timeout_s": 0.35,
+    "open_hand_on_tracking_loss": true
+  },
   "force_guard": {
     "enabled": false,
     "normal_soft_limit": 180,

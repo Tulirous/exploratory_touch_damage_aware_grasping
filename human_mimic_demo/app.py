@@ -34,24 +34,41 @@ class JsonlLogger:
 
 
 class MimicDemo:
-    def __init__(self, config: dict, mode: str, tracker_name: str, display: bool) -> None:
+    def __init__(
+        self,
+        config: dict,
+        mode: str,
+        tracker_name: str,
+        display: bool,
+        hardware_target: str = "both",
+    ) -> None:
         self.config = config
         self.mode = mode
+        self.hardware_target = hardware_target
+        self.control_arm = mode == "dry-run" or hardware_target in ("arm", "both")
+        self.control_hand = mode == "dry-run" or hardware_target in ("hand", "both")
         self.display = display
         self.tracker = self._make_tracker(tracker_name)
         self.arm = DryRunArm(nested(config, "arm").get("dry_run_initial_tcp"))
         self.hand = DryRunHand()
         if mode == "hardware":
-            self.hand = LinkerHandO6(nested(config, "hand"))
-            self.arm = URRTDEArm(nested(config, "arm"))
+            if self.control_hand:
+                self.hand = LinkerHandO6(nested(config, "hand"))
+            if self.control_arm:
+                self.arm = URRTDEArm(nested(config, "arm"))
         self.retargeter = O6Retargeter(nested(config, "retargeting"))
         self.mapper = RelativeArmMapper.from_config(nested(config, "arm_mapping"))
         self.force_guard = ForceGuard(
             nested(config, "force_guard"), self.retargeter.open_position
         )
         self.state = DemoState.WAITING_CALIBRATION
+        if mode == "hardware" and not self.control_arm:
+            self.state = DemoState.DISARMED
         self.last_sample_time = 0.0
         self.tracking_timeout = float(nested(config, "safety").get("tracking_timeout_s", 0.35))
+        self.open_hand_on_tracking_loss = bool(
+            nested(config, "safety").get("open_hand_on_tracking_loss", True)
+        )
         self.confidence_threshold = float(nested(config, "camera").get("min_confidence", 0.65))
         self.logger = JsonlLogger(str(nested(config, "logging").get("directory", "human_mimic_demo/logs")))
         self.running = True
@@ -73,7 +90,7 @@ class MimicDemo:
     def toggle_arm(self) -> None:
         if self.state == DemoState.ESTOP:
             print("[blocked] Restart the process after ESTOP.")
-        elif not self.mapper.calibrated:
+        elif self.control_arm and not self.mapper.calibrated:
             print("[blocked] Press 'c' to calibrate before arming.")
         elif self.state == DemoState.ARMED:
             self.state = DemoState.DISARMED
@@ -87,7 +104,16 @@ class MimicDemo:
     def estop(self) -> None:
         self.state = DemoState.ESTOP
         self.arm.hold()
+        self._safe_open_hand()
         print("[ESTOP] Motion stopped. Restart is required.")
+
+    def _safe_open_hand(self) -> None:
+        if not self.control_hand:
+            return
+        try:
+            self.hand.command(self.retargeter.open_position.astype(np.int64))
+        except Exception as exc:
+            print(f"[warning] Failed to send O6 safe-open command: {exc}")
 
     def _key(self, sample: TrackingSample | None) -> int:
         if not self.display or sample is None or sample.frame_bgr is None:
@@ -130,18 +156,22 @@ class MimicDemo:
             if self.state == DemoState.ARMED and now - self.last_sample_time > self.tracking_timeout:
                 self.state = DemoState.TRACKING_LOST
                 self.arm.hold()
+                if self.open_hand_on_tracking_loss:
+                    self._safe_open_hand()
                 print("[tracking lost] Arm is holding. Press 'a' after tracking recovers.")
             return
 
         self.last_sample_time = now
         command, features = self.retargeter.retarget(sample.hand_joints)
         target_tcp = self.mapper.target(sample.wrist_xyz_m) if self.mapper.calibrated else None
-        force = self.hand.force() if self.state == DemoState.ARMED else None
+        force = self.hand.force() if self.state == DemoState.ARMED and self.control_hand else None
         command, force_override = self.force_guard.apply(command, force)
 
-        if self.state == DemoState.ARMED and target_tcp is not None:
-            self.arm.command_tcp(target_tcp)
-            self.hand.command(command)
+        if self.state == DemoState.ARMED:
+            if self.control_arm and target_tcp is not None:
+                self.arm.command_tcp(target_tcp)
+            if self.control_hand:
+                self.hand.command(command)
 
         self.logger.write(
             {
@@ -206,6 +236,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="human_mimic_demo/configs/demo.json")
     parser.add_argument("--mode", choices=["dry-run", "hardware"], default="dry-run")
     parser.add_argument("--tracker", choices=["synthetic", "realsense"], default="synthetic")
+    parser.add_argument(
+        "--hardware-target",
+        choices=["hand", "arm", "both"],
+        default="both",
+        help="Which real device to command in hardware mode",
+    )
     parser.add_argument("--duration", type=float, default=0.0, help="Seconds; 0 runs until quit")
     parser.add_argument("--display", action="store_true", help="Show camera view and keyboard control")
     parser.add_argument("--auto-calibrate", action="store_true")
@@ -224,7 +260,13 @@ def main() -> None:
         raise SystemExit("Hardware mode requires --i-understand-hardware-risk")
     if args.mode == "hardware" and (args.auto_calibrate or args.auto_arm):
         raise SystemExit("Hardware mode forbids automatic calibration/arming; use the GUI keys")
-    demo = MimicDemo(load_config(args.config), args.mode, args.tracker, args.display)
+    demo = MimicDemo(
+        load_config(args.config),
+        args.mode,
+        args.tracker,
+        args.display,
+        args.hardware_target,
+    )
     signal.signal(signal.SIGINT, lambda *_: setattr(demo, "running", False))
     try:
         demo.run(args.duration, args.auto_calibrate, args.auto_arm)
