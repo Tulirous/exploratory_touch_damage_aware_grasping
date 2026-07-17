@@ -4,6 +4,8 @@ camera:
   fps: 30
   min_confidence: 0.65
   depth_median_radius_px: 3
+  input_is_mirrored: false
+  hand_landmarker_model_path: "human_mimic_demo/assets/hand_landmarker.task"
 
 arm:
   host: "192.168.1.10"

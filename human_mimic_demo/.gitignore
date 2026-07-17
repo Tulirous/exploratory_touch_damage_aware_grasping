@@ -2,3 +2,4 @@ logs/*.jsonl
 logs/*.json
 __pycache__/
 **/__pycache__/
+assets/*.task

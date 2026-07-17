@@ -71,8 +71,12 @@ Ubuntu；不建议通过 WSL2/虚拟机转发 D435 或 CAN。
 
 ### 当前实时后端
 
-MediaPipe 负责无标记右手 21 点；D435 在手腕像素邻域做深度中值，再利用相机内参
+MediaPipe Tasks Hand Landmarker 负责无标记右手 21 点；D435 在手腕像素邻域做深度中值，再利用相机内参
 反投影到米制 XYZ。手型只使用相对 21 点，因此不受腕部绝对深度影响。
+
+新版 MediaPipe 已移除 `mp.solutions`；实时后端使用 VIDEO 模式的 Tasks API，并从
+官方模型仓库单独下载 `hand_landmarker.task`。D435 原始画面未镜像，而 MediaPipe
+handedness 按自拍镜像约定输出，因此默认以其 `Left` 标签选择操作者物理右手。
 
 ### MANO/SMPL-X 后端
 

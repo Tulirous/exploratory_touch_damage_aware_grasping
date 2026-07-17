@@ -29,6 +29,7 @@ D435：
 
 ```bash
 python3 -m pip install -r human_mimic_demo/requirements-camera.txt
+python3 -m human_mimic_demo.scripts.download_mediapipe_models
 ```
 
 ### 当前本机的 D435 状态
@@ -63,6 +64,7 @@ py -3.12 -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -r human_mimic_demo\requirements-camera.txt
 python -m pip install -r human_mimic_demo\requirements-hardware.txt
+python -m human_mimic_demo.scripts.download_mediapipe_models
 ```
 
 先安装并运行 RealSense Viewer，分别确认 RGB 与 depth 稳定，再运行只读 Demo：
