@@ -18,6 +18,12 @@ def main() -> None:
         default="human_mimic_demo/assets/hand_landmarker.task",
     )
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Network connect/read timeout in seconds",
+    )
     args = parser.parse_args()
     output = Path(args.output)
     if output.exists() and not args.force:
@@ -27,7 +33,35 @@ def main() -> None:
     temporary = output.with_suffix(output.suffix + ".part")
     print(f"Downloading {HAND_LANDMARKER_URL}")
     try:
-        urllib.request.urlretrieve(HAND_LANDMARKER_URL, temporary)
+        request = urllib.request.Request(
+            HAND_LANDMARKER_URL,
+            headers={"User-Agent": "human-mimic-demo/0.1"},
+        )
+        with urllib.request.urlopen(request, timeout=args.timeout) as response:
+            total = int(response.headers.get("Content-Length", "0"))
+            downloaded = 0
+            with temporary.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        percent = 100.0 * downloaded / total
+                        print(
+                            f"\r{downloaded / 1_000_000:.1f}/{total / 1_000_000:.1f} MB "
+                            f"({percent:.1f}%)",
+                            end="",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"\r{downloaded / 1_000_000:.1f} MB",
+                            end="",
+                            flush=True,
+                        )
+        print()
         if temporary.stat().st_size < 1_000_000:
             raise RuntimeError("Downloaded model is unexpectedly small")
         temporary.replace(output)
