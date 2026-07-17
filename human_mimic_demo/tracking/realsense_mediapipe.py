@@ -60,7 +60,7 @@ class RealSenseMediaPipeTracker(HandTracker):
             base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
             running_mode=mp.tasks.vision.RunningMode.VIDEO,
             num_hands=2,
-            min_detection_confidence=self.min_confidence,
+            min_hand_detection_confidence=self.min_confidence,
             min_hand_presence_confidence=self.min_confidence,
             min_tracking_confidence=self.min_confidence,
         )
