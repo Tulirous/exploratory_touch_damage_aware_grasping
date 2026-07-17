@@ -26,7 +26,7 @@
     "workspace_max_m": [0.65, 0.20, 0.60]
   },
   "hand": {
-    "sdk_path": "C:\\robot\\linkerhand-python-sdk",
+    "sdk_path": "E:\\pycharm_project\\o6demo\\linkerhand-python-sdk",
     "can_channel": "PCAN_USBBUS1",
     "modbus": "None",
     "speed": [50, 50, 50, 50, 50, 50],
