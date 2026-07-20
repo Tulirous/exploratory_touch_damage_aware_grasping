@@ -20,6 +20,7 @@ class HandInverseDynamics(nn.Module):
         dropout: float = 0.1,
         max_context_length: int = 8,
         max_future_length: int = 16,
+        wrist_aware_auxiliary_head: bool = False,
     ) -> None:
         super().__init__()
         self.state_dim = state_dim
@@ -48,6 +49,12 @@ class HandInverseDynamics(nn.Module):
             norm=nn.LayerNorm(hidden_dim),
         )
         self.posterior = nn.Linear(hidden_dim, latent_action_dim * 2)
+        self.wrist_correction_head = (
+            nn.Linear(latent_action_dim, max_future_length * 3)
+            if wrist_aware_auxiliary_head
+            else None
+        )
+        self.max_future_length = max_future_length
         nn.init.normal_(self.posterior_token, std=0.02)
         nn.init.normal_(self.context_type, std=0.02)
         nn.init.normal_(self.future_type, std=0.02)
@@ -73,9 +80,14 @@ class HandInverseDynamics(nn.Module):
         mean, log_variance = self.posterior(encoded[:, 0]).chunk(2, dim=-1)
         should_sample = self.training if sample is None else sample
         latent_action = sample_gaussian(mean, log_variance, should_sample)
-        return {
+        outputs = {
             "latent_action": latent_action,
             "latent_mean": mean,
             "latent_log_variance": log_variance,
             "posterior_token": encoded[:, 0],
         }
+        if self.wrist_correction_head is not None:
+            outputs["predicted_wrist_cv_correction"] = self.wrist_correction_head(
+                mean
+            ).view(batch_size, self.max_future_length, 3)
+        return outputs

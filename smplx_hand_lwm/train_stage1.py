@@ -39,6 +39,9 @@ def build_model(cfg: dict) -> Stage1HandLWM:
         wrist_constant_velocity_anchor=bool(
             model.get("wrist_constant_velocity_anchor", False)
         ),
+        wrist_aware_auxiliary_head=bool(
+            model.get("wrist_aware_auxiliary_head", False)
+        ),
     )
 
 
@@ -81,6 +84,7 @@ def run_epoch(
                 loss, metrics = compute_stage1_loss(
                     outputs,
                     future,
+                    hand_context=context,
                     joints_future=joints,
                     contact_future=contact,
                     weights=loss_weights,
@@ -205,11 +209,20 @@ def main() -> None:
         elapsed_seconds = time.perf_counter() - training_started
         average_epoch_seconds = elapsed_seconds / epoch
         eta_seconds = average_epoch_seconds * (total_epochs - epoch)
+        auxiliary_status = ""
+        if float(cfg["training"]["loss_weights"].get(
+            "la_wrist_cv_correction", 0.0
+        )) > 0.0:
+            auxiliary_status = (
+                f" train_la_wrist={train_metrics['la_wrist_cv_correction']:.6f}"
+                f" val_la_wrist={val_metrics['la_wrist_cv_correction']:.6f}"
+            )
         print(
             f"epoch={epoch:03d}/{total_epochs:03d} "
             f"train={train_metrics['total']:.6f} "
             f"val={val_metrics['total']:.6f} "
             f"best_val={best_val:.6f} "
+            f"{auxiliary_status} "
             f"epoch_time={format_duration(epoch_seconds)} "
             f"elapsed={format_duration(elapsed_seconds)} "
             f"eta={format_duration(eta_seconds)}",

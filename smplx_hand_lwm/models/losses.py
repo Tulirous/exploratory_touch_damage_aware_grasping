@@ -7,6 +7,7 @@ import torch.nn.functional as F
 def compute_stage1_loss(
     outputs: dict[str, torch.Tensor],
     hand_future: torch.Tensor,
+    hand_context: torch.Tensor | None = None,
     joints_future: torch.Tensor | None = None,
     contact_future: torch.Tensor | None = None,
     weights: dict[str, float] | None = None,
@@ -44,6 +45,28 @@ def compute_stage1_loss(
     )
     losses["latent_l2"] = outputs["latent_action"].pow(2).mean()
 
+    losses["la_wrist_cv_correction"] = predicted.new_zeros(())
+    if "predicted_wrist_cv_correction" in outputs:
+        if hand_context is None:
+            raise ValueError(
+                "hand_context is required by the wrist-aware LA auxiliary head"
+            )
+        target_correction = _wrist_cv_correction_target(
+            hand_context,
+            hand_future,
+        )
+        auxiliary_prediction = outputs["predicted_wrist_cv_correction"]
+        if auxiliary_prediction.shape != target_correction.shape:
+            raise ValueError(
+                "predicted wrist correction and target must match, got "
+                f"{tuple(auxiliary_prediction.shape)} and "
+                f"{tuple(target_correction.shape)}"
+            )
+        losses["la_wrist_cv_correction"] = F.smooth_l1_loss(
+            auxiliary_prediction,
+            target_correction,
+        )
+
     zero = predicted.new_zeros(())
     losses["joints"] = zero
     if joints_future is not None:
@@ -68,10 +91,37 @@ def compute_stage1_loss(
         "contact": 0.2,
         "kl": 1e-4,
         "latent_l2": 1e-5,
+        "la_wrist_cv_correction": 0.0,
     }
     default_weights.update(weights)
     total = sum(default_weights[name] * value for name, value in losses.items())
     return total, {"total": total, **losses}
+
+
+def _wrist_cv_correction_target(
+    hand_context: torch.Tensor,
+    hand_future: torch.Tensor,
+) -> torch.Tensor:
+    """Future wrist residual relative to a constant-velocity trajectory."""
+
+    if hand_context.ndim != 3 or hand_context.shape[1] < 2:
+        raise ValueError(
+            "wrist CV correction requires hand_context shaped [B, T>=2, D]"
+        )
+    if hand_context.shape[0] != hand_future.shape[0]:
+        raise ValueError("hand_context and hand_future batch sizes must match")
+    wrist_velocity = hand_context[:, -1, :3] - hand_context[:, -2, :3]
+    steps = torch.arange(
+        1,
+        hand_future.shape[1] + 1,
+        device=hand_future.device,
+        dtype=hand_future.dtype,
+    )
+    cv_trajectory = (
+        hand_context[:, -1:, :3]
+        + steps[None, :, None] * wrist_velocity[:, None, :]
+    )
+    return hand_future[..., :3] - cv_trajectory
 
 
 def _temporal_l1(

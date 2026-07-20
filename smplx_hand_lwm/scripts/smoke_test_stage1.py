@@ -29,6 +29,7 @@ def main() -> None:
         decoder_layers=1,
         num_heads=4,
         ffn_dim=128,
+        wrist_aware_auxiliary_head=True,
     ).to(device)
     context = torch.randn(
         args.batch_size, args.context_length, args.state_dim, device=device
@@ -47,17 +48,30 @@ def main() -> None:
     loss, metrics = compute_stage1_loss(
         outputs,
         future,
+        hand_context=context,
         joints_future=joints,
         contact_future=contact,
+        weights={"la_wrist_cv_correction": 5.0},
     )
     loss.backward()
 
     assert outputs["latent_action"].shape == (args.batch_size, 16)
     assert outputs["predicted_hand_future"].shape == future.shape
+    assert outputs["predicted_wrist_cv_correction"].shape == (
+        args.batch_size,
+        args.future_length,
+        3,
+    )
     assert outputs["predicted_joints_future"].shape == joints.shape
+    assert model.inverse_dynamics.wrist_correction_head.weight.grad is not None
+    assert torch.isfinite(metrics["la_wrist_cv_correction"])
     assert torch.isfinite(loss)
     print("latent_action", tuple(outputs["latent_action"].shape))
     print("predicted_hand_future", tuple(outputs["predicted_hand_future"].shape))
+    print(
+        "predicted_wrist_cv_correction",
+        tuple(outputs["predicted_wrist_cv_correction"].shape),
+    )
     print("predicted_joints_future", tuple(outputs["predicted_joints_future"].shape))
     print("loss", float(metrics["total"].detach()))
     print("backward", "ok")
