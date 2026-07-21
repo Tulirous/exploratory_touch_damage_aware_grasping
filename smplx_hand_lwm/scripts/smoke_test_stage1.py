@@ -30,6 +30,7 @@ def main() -> None:
         num_heads=4,
         ffn_dim=128,
         wrist_aware_auxiliary_head=True,
+        window_local_wrist_translation=True,
     ).to(device)
     context = torch.randn(
         args.batch_size, args.context_length, args.state_dim, device=device
@@ -66,6 +67,23 @@ def main() -> None:
     assert model.inverse_dynamics.wrist_correction_head.weight.grad is not None
     assert torch.isfinite(metrics["la_wrist_cv_correction"])
     assert torch.isfinite(loss)
+
+    model.eval()
+    translation_shift = torch.randn(
+        args.batch_size, 1, 3, device=device
+    )
+    shifted_context = context.clone()
+    shifted_future = future.clone()
+    shifted_context[..., :3] += translation_shift
+    shifted_future[..., :3] += translation_shift
+    with torch.no_grad():
+        original_latent = model.encode_latent_action(
+            context, future, sample=False
+        )["latent_mean"]
+        shifted_latent = model.encode_latent_action(
+            shifted_context, shifted_future, sample=False
+        )["latent_mean"]
+    assert torch.allclose(original_latent, shifted_latent, atol=1e-6, rtol=1e-6)
     print("latent_action", tuple(outputs["latent_action"].shape))
     print("predicted_hand_future", tuple(outputs["predicted_hand_future"].shape))
     print(
@@ -74,6 +92,7 @@ def main() -> None:
     )
     print("predicted_joints_future", tuple(outputs["predicted_joints_future"].shape))
     print("loss", float(metrics["total"].detach()))
+    print("window_translation_invariance", "ok")
     print("backward", "ok")
 
 

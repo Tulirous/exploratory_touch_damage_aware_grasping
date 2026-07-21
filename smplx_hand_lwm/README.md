@@ -210,4 +210,100 @@ python -m smplx_hand_lwm.audit_teacher_la \
 大于 0，同时 probe validation trajectory ADE 低于 32.2 mm。还需确认
 rotation 与 MANO probe 没有明显退化，再评估 HMWM wrist ADE/FDE。
 
+## IDM-A2：window-local wrist translation
+
+IDM-A2 保留 A1 auxiliary head 和所有 A1 超参数，只在状态进入 Hand-IDM
+之前，将 context/future 的 wrist translation 同时减去最后一帧 context 的
+wrist translation。HMWM 仍接收原始坐标状态，结构和输出坐标均不改变：
+
+```bash
+python -m smplx_hand_lwm.train_stage1 \
+  --config smplx_hand_lwm/configs/stage1_hot3d_pilot50_idm_a2.yaml
+```
+
+训练完成后采用与 A1 相同的 probe 协议：
+
+```bash
+python -m smplx_hand_lwm.audit_teacher_la \
+  --checkpoint /data/chy/hot3d_hand_lwm/pilot50_idm_a2/stage1_checkpoints/best.pt \
+  --train-manifest /data/chy/hot3d_hand_lwm/pilot50/train.jsonl \
+  --val-manifest /data/chy/hot3d_hand_lwm/pilot50/val.jsonl \
+  --batch-size 64 \
+  --num-workers 0 \
+  --ridge-alpha 1.0 \
+  --output /data/chy/hot3d_hand_lwm/pilot50_idm_a2/teacher_la_audit.json
+
+python -m smplx_hand_lwm.evaluate_stage1 \
+  --checkpoint /data/chy/hot3d_hand_lwm/pilot50_idm_a2/stage1_checkpoints/best.pt \
+  --manifest /data/chy/hot3d_hand_lwm/pilot50/val.jsonl \
+  --batch-size 64 \
+  --num-workers 0 \
+  --output /data/chy/hot3d_hand_lwm/pilot50_idm_a2/stage1_val_metrics.json
+```
+
+## Model-S1：扩大 Hand-IDM 与 HMWM
+
+Model-S1 是 A2 的容量对照实验，只把 shared hidden dimension 从 256 提高到
+512、encoder/decoder 从 4 层提高到 8 层、FFN 从 1024 提高到 2048、
+attention heads 从 8 提高到 16。LA 维度仍为 64，其余数据、损失和训练参数
+不变。总参数量约从 7.48M 增加到 59.06M：
+
+```bash
+python -m smplx_hand_lwm.train_stage1 \
+  --config smplx_hand_lwm/configs/stage1_hot3d_pilot50_idm_a2_model_s1.yaml
+```
+
+该实验用于区分 capacity bottleneck 与 data/generalization bottleneck。如果
+train 显著改善而 val 不改善，则不应继续盲目扩容，应先增加独立 clips。
+
+## Data-D1：200 clips，固定 pilot50 validation
+
+Data-D1 保持59.06M参数的 Model-S1完全不变，将 HOT3D Quest3 clips 从50个
+扩展到200个。原 pilot50 的10个 validation clips 固定不动，其余有效 clips
+全部用于训练，目标为190 train clips / 10 validation clips：
+
+```bash
+python -m smplx_hand_lwm.scripts.prepare_hot3d \
+  --clips-dir /data/chy/hot3d_clips/train_quest3 \
+  --output-dir /data/chy/hot3d_hand_lwm/data_d1_200/tracks \
+  --train-manifest /data/chy/hot3d_hand_lwm/data_d1_200/train.jsonl \
+  --val-manifest /data/chy/hot3d_hand_lwm/data_d1_200/fixed_val10.jsonl \
+  --val-clip-ids 000004,000009,000011,000016,000019,000023,000025,000026,000029,000045 \
+  --handedness right \
+  --max-clips 200
+
+python -m smplx_hand_lwm.train_stage1 \
+  --config smplx_hand_lwm/configs/stage1_hot3d_data_d1_200_model_s1.yaml
+```
+
+固定 validation 是为了让 Data-D1 与 pilot50 Model-S1 的验证指标可以直接
+比较。若某个固定 validation clip 转换失败，准备脚本会直接报错，不会静默
+改变评估集合。
+
+## Test-D1：完全独立的50 clips
+
+Test-D1 使用 `000200-000249`，不重新训练 Data-D1，也不参与 checkpoint
+选择。test-only 准备脚本要求传入现有 train/val manifests，并在发现任何
+clip overlap 时终止：
+
+```bash
+python -m smplx_hand_lwm.scripts.prepare_hot3d_test \
+  --clips-dir /data/chy/hot3d_clips/train_quest3 \
+  --output-dir /data/chy/hot3d_hand_lwm/test_d1_50/tracks \
+  --test-manifest /data/chy/hot3d_hand_lwm/test_d1_50/test.jsonl \
+  --clip-start 200 \
+  --clip-end 250 \
+  --target-valid-clips 50 \
+  --exclude-manifest /data/chy/hot3d_hand_lwm/data_d1_200/train.jsonl \
+  --exclude-manifest /data/chy/hot3d_hand_lwm/data_d1_200/fixed_val10.jsonl \
+  --handedness right
+```
+
+候选范围比目标多一个 clip。选择规则固定为按 ID 排序后，取前50个能够产生
+至少一个完整16帧窗口的 clips；这允许跳过纯粹由可见性缺口导致的空 clip，
+但不会根据模型结果选择测试样本。
+
+随后直接使用 Data-D1 的 epoch-74 `best.pt` 运行 LA audit、Stage-1 evaluation
+和 HMWM diagnostics，禁止用 Test-D1 重新选择 checkpoint。
+
 数据格式见 `datasets/schema.md`，模型设计和实验计划分别见 `docs/model_architecture.md` 与 `docs/experiment_plan.md`。

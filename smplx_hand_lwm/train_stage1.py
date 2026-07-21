@@ -42,6 +42,9 @@ def build_model(cfg: dict) -> Stage1HandLWM:
         wrist_aware_auxiliary_head=bool(
             model.get("wrist_aware_auxiliary_head", False)
         ),
+        window_local_wrist_translation=bool(
+            model.get("window_local_wrist_translation", False)
+        ),
     )
 
 

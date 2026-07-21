@@ -21,9 +21,11 @@ class HandInverseDynamics(nn.Module):
         max_context_length: int = 8,
         max_future_length: int = 16,
         wrist_aware_auxiliary_head: bool = False,
+        window_local_wrist_translation: bool = False,
     ) -> None:
         super().__init__()
         self.state_dim = state_dim
+        self.window_local_wrist_translation = window_local_wrist_translation
         self.context_embed = HandSequenceEmbedding(
             state_dim, hidden_dim, max_context_length, dropout
         )
@@ -67,6 +69,11 @@ class HandInverseDynamics(nn.Module):
     ) -> dict[str, torch.Tensor]:
         ensure_hand_sequence(hand_context, self.state_dim)
         ensure_hand_sequence(hand_future, self.state_dim)
+        if self.window_local_wrist_translation:
+            hand_context, hand_future = self._canonicalize_wrist_translation(
+                hand_context,
+                hand_future,
+            )
         batch_size = hand_context.shape[0]
         tokens = torch.cat(
             [
@@ -91,3 +98,21 @@ class HandInverseDynamics(nn.Module):
                 mean
             ).view(batch_size, self.max_future_length, 3)
         return outputs
+
+    @staticmethod
+    def _canonicalize_wrist_translation(
+        hand_context: torch.Tensor,
+        hand_future: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Express wrist positions relative to the last context position."""
+
+        wrist_origin = hand_context[:, -1:, :3]
+        canonical_context = torch.cat(
+            [hand_context[..., :3] - wrist_origin, hand_context[..., 3:]],
+            dim=-1,
+        )
+        canonical_future = torch.cat(
+            [hand_future[..., :3] - wrist_origin, hand_future[..., 3:]],
+            dim=-1,
+        )
+        return canonical_context, canonical_future

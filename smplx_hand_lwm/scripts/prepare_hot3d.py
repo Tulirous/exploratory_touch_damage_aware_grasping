@@ -222,6 +222,14 @@ def main() -> None:
     parser.add_argument("--future-length", type=int, default=12)
     parser.add_argument("--stride", type=int, default=4)
     parser.add_argument("--val-fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--val-clip-ids",
+        default=None,
+        help=(
+            "Comma-separated clip IDs to keep as a fixed validation set. "
+            "When provided, --val-fraction is ignored."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-clips", type=int, default=None)
     parser.add_argument(
@@ -266,10 +274,30 @@ def main() -> None:
     clip_ids = sorted(clip_id for clip_id, tracks in tracks_by_clip.items() if tracks)
     if len(clip_ids) < 2:
         raise RuntimeError("fewer than two clips produced valid hand tracks")
-    random.Random(args.seed).shuffle(clip_ids)
-    val_count = max(1, round(len(clip_ids) * args.val_fraction))
-    val_ids = set(clip_ids[:val_count])
-    train_ids = set(clip_ids[val_count:])
+    if args.val_clip_ids:
+        val_ids = {
+            value.strip().removeprefix("clip-").removesuffix(".tar")
+            for value in args.val_clip_ids.split(",")
+            if value.strip()
+        }
+        if not val_ids:
+            raise ValueError("--val-clip-ids did not contain any clip IDs")
+        missing_val_ids = val_ids.difference(clip_ids)
+        if missing_val_ids:
+            raise ValueError(
+                "fixed validation clips did not produce valid tracks: "
+                f"{sorted(missing_val_ids)}"
+            )
+        train_ids = set(clip_ids).difference(val_ids)
+        split_method = "fixed_val_clip_ids"
+    else:
+        random.Random(args.seed).shuffle(clip_ids)
+        val_count = max(1, round(len(clip_ids) * args.val_fraction))
+        val_ids = set(clip_ids[:val_count])
+        train_ids = set(clip_ids[val_count:])
+        split_method = "seeded_random"
+    if not train_ids:
+        raise RuntimeError("fixed validation set leaves no training clips")
     train_tracks = [track for key in sorted(train_ids) for track in tracks_by_clip[key]]
     val_tracks = [track for key in sorted(val_ids) for track in tracks_by_clip[key]]
     train_rows = build_windows(
@@ -287,6 +315,7 @@ def main() -> None:
         "input_clips": len(tar_paths),
         "converted_clips": len(clip_ids),
         "failed_clips": failures,
+        "split_method": split_method,
         "train_clip_ids": sorted(train_ids),
         "val_clip_ids": sorted(val_ids),
         "train_tracks": len(train_tracks),

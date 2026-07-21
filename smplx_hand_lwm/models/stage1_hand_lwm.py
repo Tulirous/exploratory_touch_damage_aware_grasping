@@ -27,6 +27,7 @@ class Stage1HandLWM(nn.Module):
         residual_prediction: bool = True,
         wrist_constant_velocity_anchor: bool = False,
         wrist_aware_auxiliary_head: bool = False,
+        window_local_wrist_translation: bool = False,
     ) -> None:
         super().__init__()
         self.state_dim = state_dim
@@ -43,6 +44,7 @@ class Stage1HandLWM(nn.Module):
             max_context_length=context_length,
             max_future_length=future_length,
             wrist_aware_auxiliary_head=wrist_aware_auxiliary_head,
+            window_local_wrist_translation=window_local_wrist_translation,
         )
         self.hand_world_model = HandWorldModelDecoder(
             state_dim=state_dim,
