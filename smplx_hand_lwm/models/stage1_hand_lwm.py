@@ -3,7 +3,10 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .hand_world_model import HandWorldModelDecoder
+from .hand_world_model import (
+    HandWorldModelDecoder,
+    LaWMStyleHandWorldModelDecoder,
+)
 from .inverse_dynamics import HandInverseDynamics
 
 
@@ -28,6 +31,7 @@ class Stage1HandLWM(nn.Module):
         wrist_constant_velocity_anchor: bool = False,
         wrist_aware_auxiliary_head: bool = False,
         window_local_wrist_translation: bool = False,
+        hmwm_decoder_type: str = "transformer_decoder",
     ) -> None:
         super().__init__()
         self.state_dim = state_dim
@@ -46,7 +50,18 @@ class Stage1HandLWM(nn.Module):
             wrist_aware_auxiliary_head=wrist_aware_auxiliary_head,
             window_local_wrist_translation=window_local_wrist_translation,
         )
-        self.hand_world_model = HandWorldModelDecoder(
+        decoder_types = {
+            "transformer_decoder": HandWorldModelDecoder,
+            "lawam_adaln_zero": LaWMStyleHandWorldModelDecoder,
+        }
+        if hmwm_decoder_type not in decoder_types:
+            raise ValueError(
+                f"unsupported hmwm_decoder_type={hmwm_decoder_type!r}; "
+                f"expected one of {sorted(decoder_types)}"
+            )
+        decoder_class = decoder_types[hmwm_decoder_type]
+        self.hmwm_decoder_type = hmwm_decoder_type
+        self.hand_world_model = decoder_class(
             state_dim=state_dim,
             latent_action_dim=latent_action_dim,
             hidden_dim=hidden_dim,
@@ -55,11 +70,15 @@ class Stage1HandLWM(nn.Module):
             num_heads=num_heads,
             ffn_dim=ffn_dim,
             dropout=dropout,
-            max_context_length=context_length,
             num_hand_joints=num_hand_joints,
             num_contact_points=num_contact_points,
             residual_prediction=residual_prediction,
             wrist_constant_velocity_anchor=wrist_constant_velocity_anchor,
+            **(
+                {"max_context_length": context_length}
+                if hmwm_decoder_type == "transformer_decoder"
+                else {}
+            ),
         )
 
     def forward(

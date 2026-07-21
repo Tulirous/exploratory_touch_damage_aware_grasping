@@ -87,7 +87,24 @@ z_h = mu_h + exp(0.5 * logvar_h) * epsilon
 
 ### Hand World Model decoder
 
-未来时间步由 learned query 表示，`z_h` 作为条件加入 future queries；Transformer decoder 以当前手部序列为 memory，输出整段未来轨迹。默认预测相对最后一帧的 residual，以减少静态手型和身份差异。
+原始 baseline 由 learned future queries、单次 latent-action 加法和读取当前手部
+序列 memory 的 Transformer decoder 组成。
+
+`HMWM-LaWM-v0` 是完成 Data-D1/Test-D1 后的单变量替代 decoder。它保持
+Hand-IDM、64D latent、模型宽度/层数、数据和损失不变，使用与 LaWM 对齐的
+六路 AdaLN-Zero block：每层由 `z_h` 产生 attention/FFN 各自的 shift、scale
+和 residual gate，调制投影零初始化。手部模态没有二维 patch grid，因此使用
+12 个未来 horizon tokens 和固定 1D 时序位置编码：
+
+```text
+CV-anchor hand trajectory + fixed 1D horizon position
+  -> AdaLN-Zero self-attention blocks conditioned on z_h
+  -> state head
+  -> residual future hand trajectory
+```
+
+这里的 CV anchor 只外推腕部平移，旋转和 MANO PCA 默认复制 context 最后一
+帧，与既有 HMWM baseline 的 residual anchor 规则一致。
 
 输出包括：
 

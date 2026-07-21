@@ -45,6 +45,9 @@ def build_model(cfg: dict) -> Stage1HandLWM:
         window_local_wrist_translation=bool(
             model.get("window_local_wrist_translation", False)
         ),
+        hmwm_decoder_type=str(
+            model.get("hmwm_decoder_type", "transformer_decoder")
+        ),
     )
 
 

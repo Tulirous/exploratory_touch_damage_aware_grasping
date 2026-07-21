@@ -73,6 +73,13 @@ main:  200k+ windows
 
 必须加入 `shuffle-z` 测试：随机打乱 batch 内的 latent action。如果预测几乎不变，说明 decoder 忽略了 `z_h`。
 
+在 Model-S1、Data-D1 和独立 Test-D1 固化后，运行 `HMWM-LaWM-v0` 单变量
+实验：只把原 Transformer decoder 换成逐层 latent-action-conditioned
+AdaLN-Zero decoder。比较 fixed validation 与 Test-D1 上的 posterior、
+shuffle-z、constant velocity、per-horizon error 和 teacher-LA probes；禁止用
+Test-D1 选择 checkpoint。只有训练重建改善而 Test-D1 不改善时，应判定为
+更强 decoder 利用了 clip-specific LA，不能据此继续增加 HMWM 容量。
+
 ### E3.1：current-only latent prior
 
 冻结通过 E2 的 IDM 与 Hand-LWM。IDM 以真实未来产生 teacher latent，prior

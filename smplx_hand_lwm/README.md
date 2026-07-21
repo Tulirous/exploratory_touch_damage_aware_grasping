@@ -306,4 +306,50 @@ python -m smplx_hand_lwm.scripts.prepare_hot3d_test \
 随后直接使用 Data-D1 的 epoch-74 `best.pt` 运行 LA audit、Stage-1 evaluation
 和 HMWM diagnostics，禁止用 Test-D1 重新选择 checkpoint。
 
+## HMWM-LaWM-v0：AdaLN-Zero decoder
+
+完成固定 validation 和完全独立 Test-D1 后，下一项单变量实验只替换 HMWM
+decoder。Hand-IDM、64D Gaussian/VAE LA、Model-S1 容量、Data-D1 划分、
+A1/A2、损失权重和训练参数全部不变。
+
+`HMWM-LaWM-v0` 将当前的 learned future queries、单次 LA 加法和
+TransformerDecoder cross-attention 替换为 LaWM-style decoder：
+
+```text
+constant-velocity future anchor + fixed 1D horizon position
+  -> AdaLN-Zero self-attention blocks, each conditioned on teacher LA
+  -> residual future hand trajectory
+```
+
+训练前运行双 decoder smoke test：
+
+```bash
+python -m smplx_hand_lwm.scripts.smoke_test_stage1
+```
+
+正式训练：
+
+```bash
+python -m smplx_hand_lwm.train_stage1 \
+  --config smplx_hand_lwm/configs/stage1_hot3d_data_d1_200_hmwm_lawam_v0.yaml
+```
+
+训练结束后，必须在 fixed validation 和既有 Test-D1 上分别运行
+`evaluate_stage1`、`audit_teacher_la` 和 `diagnose_hmwm`。Test-D1 只用于最终
+比较，禁止据此重新选择 checkpoint 或修改超参数。
+
+全部评估可用单个入口执行。脚本会生成7个独立 JSON、对应日志，以及汇总文件
+`evaluation_bundle.json`：
+
+```bash
+python -m smplx_hand_lwm.scripts.run_hmwm_lawam_v0_evaluation
+```
+
+如果评估中断，可复用已经生成且能正常解析的 JSON：
+
+```bash
+python -m smplx_hand_lwm.scripts.run_hmwm_lawam_v0_evaluation \
+  --skip-existing
+```
+
 数据格式见 `datasets/schema.md`，模型设计和实验计划分别见 `docs/model_architecture.md` 与 `docs/experiment_plan.md`。

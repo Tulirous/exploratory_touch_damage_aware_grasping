@@ -1,4 +1,8 @@
-from .hand_world_model import HandWorldModelDecoder
+from .hand_world_model import (
+    HandAdaLNZeroBlock,
+    HandWorldModelDecoder,
+    LaWMStyleHandWorldModelDecoder,
+)
 from .inverse_dynamics import HandInverseDynamics
 from .latent_prior import HandLatentActionPrior
 from .losses import compute_stage1_loss
@@ -8,6 +12,8 @@ __all__ = [
     "HandInverseDynamics",
     "HandLatentActionPrior",
     "HandWorldModelDecoder",
+    "HandAdaLNZeroBlock",
+    "LaWMStyleHandWorldModelDecoder",
     "Stage1HandLWM",
     "compute_stage1_loss",
 ]
