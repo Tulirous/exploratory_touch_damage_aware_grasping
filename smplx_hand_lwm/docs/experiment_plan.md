@@ -80,6 +80,11 @@ shuffle-z、constant velocity、per-horizon error 和 teacher-LA probes；禁止
 Test-D1 选择 checkpoint。只有训练重建改善而 Test-D1 不改善时，应判定为
 更强 decoder 利用了 clip-specific LA，不能据此继续增加 HMWM 容量。
 
+若 v0 呈现训练重建增强而独立 Test-D1 退化，则运行 `HMWM-LaWM-v1`：保持
+v0 全部设置，仅把完整 context hand tokens 拼接到 future-anchor tokens 前。
+该实验用于隔离 v0 的退化是否来自 decoder 丢失完整 context history，而不是
+继续调整 AdaLN 容量或损失权重。
+
 ### E3.1：current-only latent prior
 
 冻结通过 E2 的 IDM 与 Hand-LWM。IDM 以真实未来产生 teacher latent，prior

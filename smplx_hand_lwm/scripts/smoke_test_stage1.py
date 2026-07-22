@@ -36,7 +36,11 @@ def main() -> None:
         0, 2, (args.batch_size, args.future_length, 5), device=device
     ).float()
 
-    for decoder_type in ("transformer_decoder", "lawam_adaln_zero"):
+    for decoder_type in (
+        "transformer_decoder",
+        "lawam_adaln_zero",
+        "lawam_adaln_zero_context",
+    ):
         model = Stage1HandLWM(
             state_dim=args.state_dim,
             latent_action_dim=16,
@@ -52,7 +56,17 @@ def main() -> None:
             window_local_wrist_translation=True,
             hmwm_decoder_type=decoder_type,
         ).to(device)
+        input_token_lengths: list[int] = []
+        hook = None
+        if decoder_type.startswith("lawam_adaln_zero"):
+            hook = model.hand_world_model.blocks[0].register_forward_pre_hook(
+                lambda _module, inputs: input_token_lengths.append(
+                    inputs[0].shape[1]
+                )
+            )
         outputs = model(context, future, sample=False)
+        if hook is not None:
+            hook.remove()
         loss, metrics = compute_stage1_loss(
             outputs,
             future,
@@ -94,7 +108,7 @@ def main() -> None:
             original_latent, shifted_latent, atol=1e-6, rtol=1e-6
         )
 
-        if decoder_type == "lawam_adaln_zero":
+        if decoder_type.startswith("lawam_adaln_zero"):
             blocks = [
                 module
                 for module in model.hand_world_model.modules()
@@ -108,6 +122,13 @@ def main() -> None:
                 assert projection.weight.grad is not None
                 assert torch.isfinite(projection.weight.grad).all()
                 assert torch.count_nonzero(projection.weight.grad) > 0
+            expected_tokens = args.future_length
+            if decoder_type == "lawam_adaln_zero_context":
+                expected_tokens += args.context_length
+                assert model.hand_world_model.include_context_tokens
+            else:
+                assert not model.hand_world_model.include_context_tokens
+            assert input_token_lengths == [expected_tokens]
 
         print(decoder_type, "latent_action", tuple(outputs["latent_action"].shape))
         print(

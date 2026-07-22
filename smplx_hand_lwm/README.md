@@ -352,4 +352,25 @@ python -m smplx_hand_lwm.scripts.run_hmwm_lawam_v0_evaluation \
   --skip-existing
 ```
 
+## HMWM-LaWM-v1：加入完整 context tokens
+
+v0 在独立 Test-D1 上证明 AdaLN 会使用 LA，但丢失完整 context 后出现明显的
+train/test gap。v1 保留 v0 的 AdaLN-Zero、CV anchor、64D LA、模型容量、数据、
+损失与优化设置，只在 self-attention 输入前拼接4个 context hand-state tokens：
+
+```text
+[4 context tokens at positions -4..-1;
+ 12 CV-anchor future tokens at positions 0..11]
+  -> shared AdaLN-Zero blocks conditioned on teacher LA
+  -> select final 12 tokens
+  -> residual future hand trajectory
+```
+
+固定位置编码不含可训练参数，因此 v0 与 v1 参数量相同。训练命令：
+
+```bash
+python -m smplx_hand_lwm.train_stage1 \
+  --config smplx_hand_lwm/configs/stage1_hot3d_data_d1_200_hmwm_lawam_v1_context.yaml
+```
+
 数据格式见 `datasets/schema.md`，模型设计和实验计划分别见 `docs/model_architecture.md` 与 `docs/experiment_plan.md`。

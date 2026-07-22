@@ -53,6 +53,7 @@ class Stage1HandLWM(nn.Module):
         decoder_types = {
             "transformer_decoder": HandWorldModelDecoder,
             "lawam_adaln_zero": LaWMStyleHandWorldModelDecoder,
+            "lawam_adaln_zero_context": LaWMStyleHandWorldModelDecoder,
         }
         if hmwm_decoder_type not in decoder_types:
             raise ValueError(
@@ -61,6 +62,16 @@ class Stage1HandLWM(nn.Module):
             )
         decoder_class = decoder_types[hmwm_decoder_type]
         self.hmwm_decoder_type = hmwm_decoder_type
+        decoder_specific_kwargs: dict[str, object]
+        if hmwm_decoder_type == "transformer_decoder":
+            decoder_specific_kwargs = {"max_context_length": context_length}
+        else:
+            decoder_specific_kwargs = {
+                "include_context_tokens": (
+                    hmwm_decoder_type == "lawam_adaln_zero_context"
+                ),
+                "max_context_length": context_length,
+            }
         self.hand_world_model = decoder_class(
             state_dim=state_dim,
             latent_action_dim=latent_action_dim,
@@ -74,11 +85,7 @@ class Stage1HandLWM(nn.Module):
             num_contact_points=num_contact_points,
             residual_prediction=residual_prediction,
             wrist_constant_velocity_anchor=wrist_constant_velocity_anchor,
-            **(
-                {"max_context_length": context_length}
-                if hmwm_decoder_type == "transformer_decoder"
-                else {}
-            ),
+            **decoder_specific_kwargs,
         )
 
     def forward(

@@ -106,6 +106,11 @@ CV-anchor hand trajectory + fixed 1D horizon position
 这里的 CV anchor 只外推腕部平移，旋转和 MANO PCA 默认复制 context 最后一
 帧，与既有 HMWM baseline 的 residual anchor 规则一致。
 
+`HMWM-LaWM-v1` 在 v0 的12个 future-anchor tokens 前拼接完整4帧 context
+tokens。context 使用固定负时间位置 `-4..-1`，future 保持 v0 的固定位置
+`0..11`；二者通过同一组 AdaLN-Zero self-attention blocks 交互，最终只读取
+12个 future tokens。该变更不引入新的可训练参数。
+
 输出包括：
 
 ```text

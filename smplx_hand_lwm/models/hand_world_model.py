@@ -210,9 +210,10 @@ class LaWMStyleHandWorldModelDecoder(nn.Module):
     Here the modality-preserving analogue is a deterministic future anchor:
     the last hand pose, optionally extrapolated with constant wrist velocity.
     Its horizon tokens receive fixed 1D positional encodings and are modulated
-    by the teacher latent action in every block.  The output remains a residual
-    correction to the same anchor, preserving the existing Stage-1 target and
-    losses.
+    by the teacher latent action in every block. HMWM-LaWM-v1 additionally
+    prepends the complete context sequence with fixed negative-time positions;
+    only the future tokens are decoded. The output remains a residual correction
+    to the same anchor, preserving the existing Stage-1 target and losses.
     """
 
     def __init__(
@@ -229,6 +230,8 @@ class LaWMStyleHandWorldModelDecoder(nn.Module):
         num_contact_points: int = 5,
         residual_prediction: bool = True,
         wrist_constant_velocity_anchor: bool = False,
+        include_context_tokens: bool = False,
+        max_context_length: int = 8,
     ) -> None:
         super().__init__()
         self.state_dim = state_dim
@@ -237,6 +240,8 @@ class LaWMStyleHandWorldModelDecoder(nn.Module):
         self.num_contact_points = num_contact_points
         self.residual_prediction = residual_prediction
         self.wrist_constant_velocity_anchor = wrist_constant_velocity_anchor
+        self.include_context_tokens = include_context_tokens
+        self.max_context_length = max_context_length
 
         self.input_projection = nn.Linear(state_dim, hidden_dim)
         self.register_buffer(
@@ -244,6 +249,19 @@ class LaWMStyleHandWorldModelDecoder(nn.Module):
             self._fixed_1d_position(future_length, hidden_dim),
             persistent=True,
         )
+        if include_context_tokens:
+            context_steps = torch.arange(
+                -max_context_length, 0, dtype=torch.float32
+            )
+            self.register_buffer(
+                "context_position",
+                self._fixed_1d_position_from_steps(context_steps, hidden_dim),
+                persistent=True,
+            )
+        else:
+            # A None buffer is absent from state_dict, preserving strict loading
+            # compatibility with HMWM-LaWM-v0 checkpoints.
+            self.register_buffer("context_position", None, persistent=True)
         self.input_dropout = nn.Dropout(dropout)
         self.latent_projection = nn.Sequential(
             nn.LayerNorm(latent_action_dim),
@@ -267,10 +285,22 @@ class LaWMStyleHandWorldModelDecoder(nn.Module):
 
     @staticmethod
     def _fixed_1d_position(length: int, hidden_dim: int) -> torch.Tensor:
-        position = torch.arange(length, dtype=torch.float32).unsqueeze(1)
+        steps = torch.arange(length, dtype=torch.float32)
+        return LaWMStyleHandWorldModelDecoder._fixed_1d_position_from_steps(
+            steps, hidden_dim
+        )
+
+    @staticmethod
+    def _fixed_1d_position_from_steps(
+        steps: torch.Tensor,
+        hidden_dim: int,
+    ) -> torch.Tensor:
+        position = steps.unsqueeze(1)
         even_dimension = torch.arange(0, hidden_dim, 2, dtype=torch.float32)
         frequency = torch.exp(-math.log(10000.0) * even_dimension / hidden_dim)
-        encoding = torch.zeros(1, length, hidden_dim, dtype=torch.float32)
+        encoding = torch.zeros(
+            1, steps.numel(), hidden_dim, dtype=torch.float32
+        )
         encoding[0, :, 0::2] = torch.sin(position * frequency)
         odd_width = encoding[0, :, 1::2].shape[-1]
         encoding[0, :, 1::2] = torch.cos(position * frequency[:odd_width])
@@ -302,14 +332,29 @@ class LaWMStyleHandWorldModelDecoder(nn.Module):
         ensure_hand_sequence(hand_context, self.state_dim)
         batch_size = hand_context.shape[0]
         anchor = self._future_anchor(hand_context)
-        tokens = self.input_projection(anchor)
-        tokens = self.input_dropout(
-            tokens + self.horizon_position.to(dtype=tokens.dtype)
+        future_tokens = self.input_projection(anchor)
+        future_tokens = (
+            future_tokens + self.horizon_position.to(dtype=future_tokens.dtype)
         )
+        if self.include_context_tokens:
+            context_length = hand_context.shape[1]
+            if context_length > self.max_context_length:
+                raise ValueError(
+                    f"context length {context_length} exceeds "
+                    f"max_context_length={self.max_context_length}"
+                )
+            context_tokens = self.input_projection(hand_context)
+            context_tokens = context_tokens + self.context_position[
+                :, -context_length:
+            ].to(dtype=context_tokens.dtype)
+            tokens = torch.cat([context_tokens, future_tokens], dim=1)
+        else:
+            tokens = future_tokens
+        tokens = self.input_dropout(tokens)
         condition = self.latent_projection(latent_action)
         for block in self.blocks:
             tokens = block(tokens, condition)
-        decoded = self.output_norm(tokens)
+        decoded = self.output_norm(tokens[:, -self.future_length :])
 
         predicted_state = self.state_head(decoded)
         if self.residual_prediction:
