@@ -1,0 +1,64 @@
+project:
+  name: hot3d_hand_lwm_frozen_v2_idm_original_decoder
+  seed: 42
+
+data:
+  train_manifest: /data/chy/hot3d_hand_lwm/data_d1_200/train.jsonl
+  val_manifest: /data/chy/hot3d_hand_lwm/data_d1_200/fixed_val10.jsonl
+  fps: 30
+  context_length: 4
+  future_length: 12
+  stride_frames: 4
+  hand_state_dim: 24
+  num_hand_joints: 21
+  num_contact_points: 5
+  coordinate_frame: clip_initial_wrist
+  num_workers: 4
+
+model:
+  # Retrain only the original TransformerDecoder HMWM. The Hand-IDM below is
+  # loaded from v2 and is never updated.
+  latent_action_dim: 64
+  hidden_dim: 512
+  encoder_layers: 8
+  decoder_layers: 8
+  num_heads: 16
+  ffn_dim: 2048
+  dropout: 0.1
+  residual_prediction: true
+  wrist_constant_velocity_anchor: true
+  wrist_aware_auxiliary_head: true
+  window_local_wrist_translation: true
+  hmwm_decoder_type: transformer_decoder
+
+training:
+  device: cuda
+  precision: bf16
+  batch_size: 64
+  epochs: 100
+  lr: 0.0002
+  weight_decay: 0.01
+  grad_clip_norm: 1.0
+  pretrained_idm_checkpoint: /data/chy/hot3d_hand_lwm/data_d1_200/hmwm_adaln_cross_v2_checkpoints/best.pt
+  freeze_inverse_dynamics: true
+  deterministic_teacher_latent: true
+  checkpoint_dir: /data/chy/hot3d_hand_lwm/data_d1_200/frozen_v2_idm_original_decoder_checkpoints
+  loss_weights:
+    state: 1.0
+    wrist_translation: 5.0
+    wrist_rotation: 0.5
+    mano_pose: 0.5
+    joints: 0.0
+    contact: 0.0
+    velocity: 0.2
+    acceleration: 0.05
+    kl: 0.0001
+    latent_l2: 0.00001
+    la_wrist_cv_correction: 5.0
+
+evaluation:
+  metrics:
+    - wrist_ade_mm
+    - wrist_fde_mm
+    - rotation6d_mae
+    - mano_pca_mae

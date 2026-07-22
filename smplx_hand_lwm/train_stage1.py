@@ -51,6 +51,37 @@ def build_model(cfg: dict) -> Stage1HandLWM:
     )
 
 
+def load_pretrained_inverse_dynamics(
+    model: Stage1HandLWM,
+    checkpoint_path: str | Path,
+) -> dict:
+    """Load only Hand-IDM weights from a complete Stage-1 checkpoint."""
+
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(
+            f"pretrained Hand-IDM checkpoint does not exist: {checkpoint_path}"
+        )
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    state_dict = checkpoint.get("model", checkpoint)
+    prefix = "inverse_dynamics."
+    inverse_dynamics_state = {
+        key.removeprefix(prefix): value
+        for key, value in state_dict.items()
+        if key.startswith(prefix)
+    }
+    if not inverse_dynamics_state:
+        raise ValueError(
+            f"checkpoint contains no {prefix!r} parameters: {checkpoint_path}"
+        )
+    model.inverse_dynamics.load_state_dict(inverse_dynamics_state, strict=True)
+    return checkpoint
+
+
 def format_duration(seconds: float) -> str:
     seconds = max(0, round(seconds))
     hours, remainder = divmod(seconds, 3600)
@@ -168,9 +199,55 @@ def main() -> None:
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, **loader_args)
 
-    model = build_model(cfg).to(device)
+    model = build_model(cfg)
+    pretrained_idm_checkpoint = cfg["training"].get(
+        "pretrained_idm_checkpoint"
+    )
+    freeze_inverse_dynamics = bool(
+        cfg["training"].get("freeze_inverse_dynamics", False)
+    )
+    deterministic_teacher_latent = bool(
+        cfg["training"].get("deterministic_teacher_latent", False)
+    )
+    if freeze_inverse_dynamics and not pretrained_idm_checkpoint:
+        raise ValueError(
+            "freeze_inverse_dynamics=true requires pretrained_idm_checkpoint"
+        )
+    if deterministic_teacher_latent and not freeze_inverse_dynamics:
+        raise ValueError(
+            "deterministic_teacher_latent=true requires "
+            "freeze_inverse_dynamics=true"
+        )
+    if pretrained_idm_checkpoint:
+        source = load_pretrained_inverse_dynamics(
+            model,
+            pretrained_idm_checkpoint,
+        )
+        source_epoch = source.get("epoch", "unknown")
+        print(
+            "loaded pretrained Hand-IDM "
+            f"checkpoint={pretrained_idm_checkpoint} epoch={source_epoch}",
+            flush=True,
+        )
+    if freeze_inverse_dynamics:
+        if not deterministic_teacher_latent:
+            raise ValueError(
+                "a frozen Hand-IDM comparison must set "
+                "deterministic_teacher_latent=true"
+            )
+        model.freeze_inverse_dynamics_()
+        print(
+            "frozen Hand-IDM: eval mode, no gradients, posterior mean teacher LA",
+            flush=True,
+        )
+    model = model.to(device)
+    trainable_parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
+    if not trainable_parameters:
+        raise ValueError("model has no trainable parameters")
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        trainable_parameters,
         lr=float(cfg["training"]["lr"]),
         weight_decay=float(cfg["training"]["weight_decay"]),
     )

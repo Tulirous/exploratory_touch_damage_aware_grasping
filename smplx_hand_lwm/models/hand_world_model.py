@@ -203,6 +203,106 @@ class HandAdaLNZeroBlock(nn.Module):
         return tokens + gate_ffn.unsqueeze(1) * self.ffn(normalized)
 
 
+class HandAdaLNCrossAttentionBlock(nn.Module):
+    """Future-query block with AdaLN-Zero and read-only context memory.
+
+    This keeps the original HMWM decoder's query-to-memory inductive bias.
+    Latent action modulates the future-query stream's self-attention and FFN
+    with LaWAM's six-way AdaLN-Zero parameterization. Cross-attention remains
+    an ordinary pre-norm residual sublayer and uses context only as keys/values;
+    the context tokens are never updated or latent-action modulated.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        num_heads: int,
+        ffn_dim: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        self.norm_self_attention = nn.LayerNorm(
+            hidden_dim, elementwise_affine=False, eps=1e-6
+        )
+        self.self_attention = nn.MultiheadAttention(
+            hidden_dim,
+            num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm_cross_attention = nn.LayerNorm(hidden_dim)
+        self.cross_attention = nn.MultiheadAttention(
+            hidden_dim,
+            num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm_ffn = nn.LayerNorm(
+            hidden_dim, elementwise_affine=False, eps=1e-6
+        )
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, ffn_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(ffn_dim, hidden_dim),
+            nn.Dropout(dropout),
+        )
+        self.residual_dropout = nn.Dropout(dropout)
+        self.adaln_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 6 * hidden_dim),
+        )
+        nn.init.zeros_(self.adaln_modulation[-1].weight)
+        nn.init.zeros_(self.adaln_modulation[-1].bias)
+
+    def forward(
+        self,
+        future_tokens: torch.Tensor,
+        context_memory: torch.Tensor,
+        condition: torch.Tensor,
+    ) -> torch.Tensor:
+        (
+            shift_self_attention,
+            scale_self_attention,
+            gate_self_attention,
+            shift_ffn,
+            scale_ffn,
+            gate_ffn,
+        ) = self.adaln_modulation(condition).chunk(6, dim=-1)
+
+        normalized = _modulate(
+            self.norm_self_attention(future_tokens),
+            shift_self_attention,
+            scale_self_attention,
+        )
+        self_attention_output, _ = self.self_attention(
+            normalized,
+            normalized,
+            normalized,
+            need_weights=False,
+        )
+        future_tokens = future_tokens + gate_self_attention.unsqueeze(
+            1
+        ) * self.residual_dropout(self_attention_output)
+
+        cross_attention_output, _ = self.cross_attention(
+            self.norm_cross_attention(future_tokens),
+            context_memory,
+            context_memory,
+            need_weights=False,
+        )
+        future_tokens = future_tokens + self.residual_dropout(
+            cross_attention_output
+        )
+
+        normalized = _modulate(
+            self.norm_ffn(future_tokens),
+            shift_ffn,
+            scale_ffn,
+        )
+        return future_tokens + gate_ffn.unsqueeze(1) * self.ffn(normalized)
+
+
 class LaWMStyleHandWorldModelDecoder(nn.Module):
     """LaWAM-style AdaLN-Zero decoder for structured hand trajectories.
 
@@ -359,6 +459,122 @@ class LaWMStyleHandWorldModelDecoder(nn.Module):
         predicted_state = self.state_head(decoded)
         if self.residual_prediction:
             predicted_state = predicted_state + anchor
+        predicted_joints = self.joint_head(decoded).view(
+            batch_size,
+            self.future_length,
+            self.num_hand_joints,
+            3,
+        )
+        predicted_contact_logits = self.contact_head(decoded)
+        return {
+            "predicted_hand_future": predicted_state,
+            "predicted_joints_future": predicted_joints,
+            "predicted_contact_logits": predicted_contact_logits,
+            "future_tokens": decoded,
+        }
+
+
+class AdaLNCrossAttentionHandWorldModelDecoder(nn.Module):
+    """Original HMWM topology with per-layer latent-action AdaLN-Zero.
+
+    Learned future queries cross-attend to the complete embedded hand context,
+    exactly preserving the baseline's query/memory roles. Unlike the baseline,
+    latent action is not added once to the input queries; it conditions every
+    block through HandAdaLNCrossAttentionBlock instead.
+    """
+
+    def __init__(
+        self,
+        state_dim: int = 24,
+        latent_action_dim: int = 64,
+        hidden_dim: int = 256,
+        future_length: int = 12,
+        num_layers: int = 4,
+        num_heads: int = 8,
+        ffn_dim: int = 1024,
+        dropout: float = 0.1,
+        max_context_length: int = 8,
+        num_hand_joints: int = 21,
+        num_contact_points: int = 5,
+        residual_prediction: bool = True,
+        wrist_constant_velocity_anchor: bool = False,
+    ) -> None:
+        super().__init__()
+        self.state_dim = state_dim
+        self.future_length = future_length
+        self.num_hand_joints = num_hand_joints
+        self.num_contact_points = num_contact_points
+        self.residual_prediction = residual_prediction
+        self.wrist_constant_velocity_anchor = wrist_constant_velocity_anchor
+
+        self.context_embed = HandSequenceEmbedding(
+            state_dim, hidden_dim, max_context_length, dropout
+        )
+        self.future_queries = nn.Parameter(
+            torch.zeros(1, future_length, hidden_dim)
+        )
+        self.latent_projection = nn.Sequential(
+            nn.LayerNorm(latent_action_dim),
+            nn.Linear(latent_action_dim, hidden_dim),
+        )
+        self.blocks = nn.ModuleList(
+            [
+                HandAdaLNCrossAttentionBlock(
+                    hidden_dim=hidden_dim,
+                    num_heads=num_heads,
+                    ffn_dim=ffn_dim,
+                    dropout=dropout,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.output_norm = nn.LayerNorm(hidden_dim)
+        self.state_head = nn.Linear(hidden_dim, state_dim)
+        self.joint_head = nn.Linear(hidden_dim, num_hand_joints * 3)
+        self.contact_head = nn.Linear(hidden_dim, num_contact_points)
+        nn.init.normal_(self.future_queries, std=0.02)
+
+    def _prediction_anchor(self, hand_context: torch.Tensor) -> torch.Tensor:
+        anchor = hand_context[:, -1:, :].expand(
+            -1, self.future_length, -1
+        ).clone()
+        if self.wrist_constant_velocity_anchor and hand_context.shape[1] >= 2:
+            wrist_velocity = hand_context[:, -1, :3] - hand_context[:, -2, :3]
+            steps = torch.arange(
+                1,
+                self.future_length + 1,
+                device=hand_context.device,
+                dtype=hand_context.dtype,
+            ).view(1, self.future_length, 1)
+            anchor[..., :3] = (
+                hand_context[:, -1:, :3]
+                + steps * wrist_velocity[:, None, :]
+            )
+        return anchor
+
+    def forward(
+        self,
+        hand_context: torch.Tensor,
+        latent_action: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        ensure_hand_sequence(hand_context, self.state_dim)
+        batch_size = hand_context.shape[0]
+        context_memory = self.context_embed(hand_context)
+        future_tokens = self.future_queries.expand(batch_size, -1, -1)
+        condition = self.latent_projection(latent_action)
+        for block in self.blocks:
+            future_tokens = block(
+                future_tokens,
+                context_memory,
+                condition,
+            )
+        decoded = self.output_norm(future_tokens)
+
+        predicted_state = self.state_head(decoded)
+        if self.residual_prediction:
+            predicted_state = predicted_state + self._prediction_anchor(
+                hand_context
+            )
         predicted_joints = self.joint_head(decoded).view(
             batch_size,
             self.future_length,

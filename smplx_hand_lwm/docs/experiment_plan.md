@@ -85,6 +85,18 @@ v0 全部设置，仅把完整 context hand tokens 拼接到 future-anchor token
 该实验用于隔离 v0 的退化是否来自 decoder 丢失完整 context history，而不是
 继续调整 AdaLN 容量或损失权重。
 
+若 v1 仍不如原 HMWM，则运行 `HMWM-AdaLN-Cross-v2`。该实验恢复原
+TransformerDecoder 的 learned future query/read-only context memory 关系，
+只将 one-shot LA addition 替换为逐层六路 AdaLN-Zero。它用于隔离失败来源
+究竟是 LaWM-style tokenization，还是 AdaLN conditioning 本身。
+
+若 v2 的 teacher LA probe 改善但 decoder 指标仍未超过原 HMWM，则冻结 v2
+Hand-IDM，使用确定性 posterior mean 为每个窗口生成固定 teacher LA，分别从头
+训练原 TransformerDecoder 与 AdaLN-Cross decoder。两组仅允许 decoder 类型和
+checkpoint 输出目录不同。最终比较前必须验证两个 checkpoint 的
+`inverse_dynamics.*` 参数哈希一致，主判据为完全独立 Test-D1 的 posterior
+wrist ADE/FDE、rotation6D MAE、MANO PCA MAE，并同时报告 shuffle-z gap。
+
 ### E3.1：current-only latent prior
 
 冻结通过 E2 的 IDM 与 Hand-LWM。IDM 以真实未来产生 teacher latent，prior

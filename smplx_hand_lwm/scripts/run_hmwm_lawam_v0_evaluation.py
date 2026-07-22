@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--ridge-alpha", type=float, default=1.0)
+    parser.add_argument("--suite-name", default="HMWM-LaWM-v0 evaluation")
     parser.add_argument(
         "--skip-existing",
         action="store_true",
@@ -251,7 +252,7 @@ def main() -> None:
             results[key] = json.load(handle)
 
     bundle = {
-        "suite": "HMWM-LaWM-v0 evaluation",
+        "suite": args.suite_name,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "total_seconds": time.perf_counter() - suite_started,
         "inputs": {

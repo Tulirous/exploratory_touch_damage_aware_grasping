@@ -373,4 +373,51 @@ python -m smplx_hand_lwm.train_stage1 \
   --config smplx_hand_lwm/configs/stage1_hot3d_data_d1_200_hmwm_lawam_v1_context.yaml
 ```
 
+## HMWM-AdaLN-Cross-v2：恢复 read-only context memory
+
+v0/v1 的 self-attention tokenization 在独立 Test-D1 上均不如原 HMWM。v2
+恢复原 Model-S1 的 learned future queries 和完整 context cross-attention，只
+替换 LA conditioning：移除输入 queries 上的一次 LA 加法，改为每层六路
+AdaLN-Zero。context tokens 始终只作为 cross-attention K/V，不接受 LA 调制，
+也不在 decoder 中被更新：
+
+```text
+learned future queries
+  -> AdaLN-Zero self-attention (teacher LA)
+  -> cross-attention(read-only 4-frame context memory)
+  -> AdaLN-Zero FFN (teacher LA)
+  -> repeated for every decoder block
+```
+
+正式训练：
+
+```bash
+python -m smplx_hand_lwm.train_stage1 \
+  --config smplx_hand_lwm/configs/stage1_hot3d_data_d1_200_hmwm_adaln_cross_v2.yaml
+```
+
+## Frozen-v2-IDM decoder isolation
+
+为区分 v2 的收益来自 Hand-IDM 还是 decoder，固定使用 v2 `best.pt` 中的
+Hand-IDM，并强制 `eval + no_grad + posterior mean`。两组实验均从头训练 decoder：
+
+```bash
+python -m smplx_hand_lwm.train_stage1 \
+  --config smplx_hand_lwm/configs/stage1_hot3d_data_d1_200_frozen_v2_idm_original_decoder.yaml
+
+python -m smplx_hand_lwm.train_stage1 \
+  --config smplx_hand_lwm/configs/stage1_hot3d_data_d1_200_frozen_v2_idm_adaln_cross.yaml
+```
+
+训练完成后使用一个入口完成 fixed-val/Test-D1 全套评估、验证两个 checkpoint
+中的 IDM 参数哈希一致，并生成逐指标差值：
+
+```bash
+python -m smplx_hand_lwm.scripts.run_frozen_v2_idm_decoder_comparison
+```
+
+主结论以 `decoder_comparison.json` 的 Test-D1 为准；其中
+`original_minus_adaln < 0` 表示原 TransformerDecoder 更好。Test-D1 不参与
+checkpoint 选择或调参。
+
 数据格式见 `datasets/schema.md`，模型设计和实验计划分别见 `docs/model_architecture.md` 与 `docs/experiment_plan.md`。

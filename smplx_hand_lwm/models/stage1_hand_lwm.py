@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from .hand_world_model import (
+    AdaLNCrossAttentionHandWorldModelDecoder,
     HandWorldModelDecoder,
     LaWMStyleHandWorldModelDecoder,
 )
@@ -37,6 +38,7 @@ class Stage1HandLWM(nn.Module):
         self.state_dim = state_dim
         self.context_length = context_length
         self.future_length = future_length
+        self.inverse_dynamics_frozen = False
         self.inverse_dynamics = HandInverseDynamics(
             state_dim=state_dim,
             latent_action_dim=latent_action_dim,
@@ -54,6 +56,9 @@ class Stage1HandLWM(nn.Module):
             "transformer_decoder": HandWorldModelDecoder,
             "lawam_adaln_zero": LaWMStyleHandWorldModelDecoder,
             "lawam_adaln_zero_context": LaWMStyleHandWorldModelDecoder,
+            "adaln_zero_cross_attention": (
+                AdaLNCrossAttentionHandWorldModelDecoder
+            ),
         }
         if hmwm_decoder_type not in decoder_types:
             raise ValueError(
@@ -63,7 +68,10 @@ class Stage1HandLWM(nn.Module):
         decoder_class = decoder_types[hmwm_decoder_type]
         self.hmwm_decoder_type = hmwm_decoder_type
         decoder_specific_kwargs: dict[str, object]
-        if hmwm_decoder_type == "transformer_decoder":
+        if hmwm_decoder_type in {
+            "transformer_decoder",
+            "adaln_zero_cross_attention",
+        }:
             decoder_specific_kwargs = {"max_context_length": context_length}
         else:
             decoder_specific_kwargs = {
@@ -94,11 +102,23 @@ class Stage1HandLWM(nn.Module):
         hand_future: torch.Tensor,
         sample: bool | None = None,
     ) -> dict[str, torch.Tensor]:
-        posterior = self.encode_latent_action(
-            hand_context,
-            hand_future,
-            sample=sample,
-        )
+        if self.inverse_dynamics_frozen:
+            # A frozen teacher must be invariant to both posterior sampling and
+            # encoder dropout. This makes the same window produce exactly the
+            # same LA while the decoder is retrained from scratch.
+            self.inverse_dynamics.eval()
+            with torch.no_grad():
+                posterior = self.encode_latent_action(
+                    hand_context,
+                    hand_future,
+                    sample=False,
+                )
+        else:
+            posterior = self.encode_latent_action(
+                hand_context,
+                hand_future,
+                sample=sample,
+            )
         prediction = self.decode_future(
             hand_context,
             posterior["latent_action"],
@@ -119,3 +139,17 @@ class Stage1HandLWM(nn.Module):
         latent_action: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         return self.hand_world_model(hand_context, latent_action)
+
+    def freeze_inverse_dynamics_(self) -> Stage1HandLWM:
+        """Freeze the Hand-IDM and use its deterministic posterior mean."""
+
+        self.inverse_dynamics_frozen = True
+        self.inverse_dynamics.requires_grad_(False)
+        self.inverse_dynamics.eval()
+        return self
+
+    def train(self, mode: bool = True) -> Stage1HandLWM:
+        super().train(mode)
+        if self.inverse_dynamics_frozen:
+            self.inverse_dynamics.eval()
+        return self
